@@ -42,9 +42,9 @@ void makeTimelapse(const std::string& folderPath, const std::string& outputFile,
     }
     
     cv::VideoWriter writer(outputFile,
-                            cv::VideoWriter::fourcc('a','v','c','1'),  
-                            fps,
-                            frameSize);
+                       cv::VideoWriter::fourcc('M','J','P','G'), 
+                       fps,
+                       frameSize);
     
     if (!writer.isOpened()) {
         std::cerr << "Failed to open video writer!" << std::endl;
@@ -60,6 +60,7 @@ void makeTimelapse(const std::string& folderPath, const std::string& outputFile,
                 cv::resize(img, img, frameSize);
             }
             writer.write(img);
+            //"." for each frame
             std::cout << "." << std::flush;  
         }
     }
@@ -68,7 +69,10 @@ void makeTimelapse(const std::string& folderPath, const std::string& outputFile,
     std::cout << "\nTimelapse saved to " << outputFile << std::endl;
 }
 
+//main function for testing with custom input/output paths
 // int main() {
-//     makeTimelapse("./data/GOES16", "timelapse.mp4", 24);
+//     std::string dataPath = "/mnt/ssd/GeoSatelliteView/data/";
+//     //std::string dataPath = "./data/";
+//     makeTimelapse(dataPath + "GOES16/2026-Jan-20", dataPath + "GOES16/timelapses/2026-Jan-20.avi", 30);
 //     return 0;
 // }

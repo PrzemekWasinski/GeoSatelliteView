@@ -24,19 +24,22 @@ size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
     return size * nmemb;
 }
 
-bool checkDiskSpace(const char* path = "/") {
+bool checkDiskSpace(const char* path = "/mnt/ssd") {
     struct statvfs stat;
-    
+
     if (statvfs(path, &stat) != 0) {
-        std::cerr << "Error getting disk stats" << std::endl;
+        std::cerr << "Error getting disk stats\n" << std::endl;
         return false;
     }
-    
-    unsigned long available = stat.f_bavail * stat.f_frsize;
-    unsigned long availableGB = available / (1024*1024*1024);
-    
+
+    unsigned long long available = (unsigned long long)stat.f_bavail * (unsigned long long)stat.f_frsize;
+    unsigned long long availableGB = available / (1024ULL * 1024ULL * 1024ULL);
+
+    std::cout << "Available space: " << availableGB << " GB\n";
+
     return availableGB >= 10;
 }
+
 
 int main() {
     bool firstRun = true;
@@ -49,8 +52,11 @@ int main() {
     int storedDay = lastDay.tm_yday; 
     int storedYear = lastDay.tm_year; 
 
-    std::filesystem::path goes16Path = "./data/GOES16/";
-    std::filesystem::path goes18Path = "./data/GOES18/";
+    std::filesystem::path dataDir = "./data/";
+    //std::filesystem::path dataDir = "/mnt/ssd/GeoSatelliteView/data/";
+
+    std::filesystem::path goes16Path = std::string(dataDir) + "GOES16/";
+    std::filesystem::path goes18Path = std::string(dataDir) + "GOES18/";
 
     if (!pathExists(goes16Path)) {
         std::filesystem::create_directory(goes16Path);
@@ -61,7 +67,7 @@ int main() {
     } 
 
     while (true) {
-        //check if theres enoug hspace on th esd card
+        //check if theres enough disk space
         if (!checkDiskSpace()) {
             std::cout << "Not enough disk space left";
             break;
@@ -84,10 +90,16 @@ int main() {
         auto duration = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastTimestamp);
 
         //check if the direcotry for storing today's images has been created
-        std::filesystem::path currentDir = "./data/" + std::string("GOES" + satellite + "/" + todayDate);
+        std::filesystem::path currentDir = std::string(std::string(dataDir) + "GOES" + satellite + "/" + todayDate);
         if (!pathExists(currentDir)) {
             std::filesystem::create_directory(currentDir);
-        }   
+        } 
+        
+        //create dir for timelapse output
+        std::filesystem::path timelapseDir = std::string(std::string(dataDir) + "GOES" + satellite + "/timelapses");
+        if (!pathExists(timelapseDir)) {
+            std::filesystem::create_directory(timelapseDir);
+        } 
 
         //check if day is over
         std::time_t now = std::time(nullptr);
@@ -105,11 +117,11 @@ int main() {
             std::cout << "Creating timelapse for yesterday: " << yesterday << std::endl;
             
             //create timelapse for yesterday
-            std::string yesterdayPath = "./data/GOES" + satellite + "/" + yesterday;
-            std::string timelapseOutput = "./data/GOES" + satellite + "_" + yesterday + ".mp4";
+            std::string yesterdayPath = std::string(dataDir) + "GOES" + satellite + "/" + yesterday;
+            std::string timelapseOutput = std::string(timelapseDir) + "/" + yesterday + ".mp4";
             
             if (pathExists(yesterdayPath)) {
-                //launch timelapse creation in a separate thread
+                //launch timelapse creation in a separate thread to not stop receiving images
                 std::thread timelapseThread([yesterdayPath, timelapseOutput]() {
                     makeTimelapse(yesterdayPath, timelapseOutput, 24);
                 });
@@ -143,7 +155,12 @@ int main() {
 
             CURLcode res = curl_easy_perform(curl);
             if (res != CURLE_OK) {
-                std::cerr << "Error receiving GOES " + satellite + ": " << curl_easy_strerror(res) << " (" + std::string(todayDate) + " " + std::string(currentTime) + ")\n";
+                std::cerr << "Error receiving GOES " + satellite + ": " 
+                        << curl_easy_strerror(res) 
+                        << " (" << todayDate << " " << currentTime << ")\n";
+
+                file.close();
+                std::filesystem::remove(imageSavePath);
             } else {
                 std::cout << "Received GOES " + std::string(satellite) + " (" + std::string(todayDate) + " " + std::string(currentTime) + ")\n";
             }
