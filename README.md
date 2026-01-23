@@ -6,7 +6,7 @@ You can leave this program running on a Raspbery Pi 24/7 and it'll automatically
 1) SSH into your Raspberry Pi
 2) Clone this repository by running `git clone https://github.com/PrzemekWasinski/GeoSatelliteView/`
 3) Switch to this repository: `cd ./GeoSatelliteView`
-4) Compile by running in the root folder: `cd ./build/ && cmake . && make -C .`
+4) Compile by running in the root folder: `cd ./build/ && cmake . && make -C . && cd ..`
 5) Leave it running 24/7: `nohup ./build/output/main > /dev/null 2>&1 &`
 6) Close your SSH session
 
