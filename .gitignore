@@ -1,8 +1,9 @@
 /data/GOES16
 /data/GOES18
 
-/build/output/
-/build/CMakeFiles
+build/
+
+/tests/api_test/*
 *.o
 *.so
 *.a

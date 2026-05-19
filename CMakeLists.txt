@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 #source files
 set(SOURCES
-    ../main.cpp
-    ../timelapse.cpp
+    src/main.cpp
+    src/timelapse.cpp
 )
 
 #output folder

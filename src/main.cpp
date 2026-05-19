@@ -1,5 +1,4 @@
 #include <curl/curl.h>
-#include "timelapse.h"
 #include <fstream>
 #include <iostream>
 #include <ctime>
@@ -9,7 +8,11 @@
 #include <filesystem>
 #include <thread>
 #include <sys/statvfs.h>
+#include <vector>
 
+#include "../include/timelapse.h"
+
+//Function to check if a folder path exists before saving images
 bool pathExists(std::filesystem::path path) {
     if (std::filesystem::exists(path) && std::filesystem::is_directory(path)) {
         return true;
@@ -24,6 +27,7 @@ size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
     return size * nmemb;
 }
 
+//Check if theres at least 10GB left on disk
 bool checkDiskSpace(const char* path = "/mnt/ssd") {
     struct statvfs stat;
 
@@ -39,6 +43,12 @@ bool checkDiskSpace(const char* path = "/mnt/ssd") {
 
     return availableGB >= 10;
 }
+
+// void createDirectories(const std::vector<std::string>& directories) {
+//     for (size_t i = 0; i < directories.size(); i++) {
+//         std::cout << directories[i];
+//     }
+// }
 
 
 int main() {
@@ -66,9 +76,9 @@ int main() {
         std::filesystem::create_directory(goes18Path);
     } 
 
-    while (true) {
-        //check if theres enough disk space
-        if (!checkDiskSpace()) {
+    while (true) { //Main image pulling loop
+        //check if theres at least 10GB disk space
+        if (!checkDiskSpace(".")) {
             std::cout << "Not enough disk space left";
             break;
         }
@@ -101,7 +111,7 @@ int main() {
             std::filesystem::create_directory(timelapseDir);
         } 
 
-        //check if day is over
+        //check if today is over
         std::time_t now = std::time(nullptr);
         std::tm currentDay = *std::localtime(&now);
 
@@ -109,7 +119,7 @@ int main() {
             std::time_t yesterdayTime = now - 86400;
             std::tm yesterdayTm = *std::localtime(&yesterdayTime);
             
-            //format yesterday's date
+            //format yesterdays date
             char yesterdayBuffer[50];
             strftime(yesterdayBuffer, 50, "%Y-%b-%d", &yesterdayTm);
             std::string yesterday = yesterdayBuffer;

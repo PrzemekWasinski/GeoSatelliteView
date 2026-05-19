@@ -1,10 +1,11 @@
 #include <opencv2/opencv.hpp>
-#include "timelapse.h"
 #include <filesystem>
 #include <vector>
 #include <algorithm>
 #include <string>
 #include <iostream>
+
+#include "../include/timelapse.h"
 
 void makeTimelapse(const std::string& folderPath, const std::string& outputFile, int fps) {
     std::vector<std::string> imageFiles;
