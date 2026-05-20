@@ -1,1 +1,12 @@
-GOES: 16
+#How often do you want images to be compiled?
+Hourly: false
+Daily: true
+Weekly: false
+Monthly: false
+
+#How often do you want images to be pulled (Minutes):
+Interval: 10
+
+#Choose a satellite, sector and product/radio band or set to None for random
+#Format: [GOES18, PNW, AirMass]
+Satellite: None

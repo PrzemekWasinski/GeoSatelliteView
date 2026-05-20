@@ -8,18 +8,9 @@
 #include <filesystem>
 #include <thread>
 #include <sys/statvfs.h>
-#include <vector>
 
 #include "../include/timelapse.h"
-
-//Function to check if a folder path exists before saving images
-bool pathExists(std::filesystem::path path) {
-    if (std::filesystem::exists(path) && std::filesystem::is_directory(path)) {
-        return true;
-    } 
-
-    return false;
-}
+#include "../include/fileFunctions.h"
 
 size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
     std::ofstream* out = static_cast<std::ofstream*>(stream);
@@ -27,129 +18,126 @@ size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
     return size * nmemb;
 }
 
-//Check if theres at least 10GB left on disk
 bool checkDiskSpace(const char* path = "/mnt/ssd") {
     struct statvfs stat;
-
     if (statvfs(path, &stat) != 0) {
-        std::cerr << "Error getting disk stats\n" << std::endl;
+        std::cerr << "Error getting disk stats\n";
         return false;
     }
-
     unsigned long long available = (unsigned long long)stat.f_bavail * (unsigned long long)stat.f_frsize;
     unsigned long long availableGB = available / (1024ULL * 1024ULL * 1024ULL);
-
     std::cout << "Available space: " << availableGB << " GB\n";
-
     return availableGB >= 10;
 }
 
-// void createDirectories(const std::vector<std::string>& directories) {
-//     for (size_t i = 0; i < directories.size(); i++) {
-//         std::cout << directories[i];
-//     }
-// }
-
+// Compile timelapse then remove imagery folder
+void compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir) {
+    std::string outputFile = std::string(outputDir) + "/output.mkv";
+    std::filesystem::create_directories(outputDir);
+    makeTimelapse(std::string(imageryDir), outputFile, 24);
+}
 
 int main() {
-    bool firstRun = true;
-    //start timestamp
-    auto lastTimestamp = std::chrono::steady_clock::now();
-
-    //start daystamp
-    std::time_t t = std::time(nullptr);
-    std::tm lastDay = *std::localtime(&t);
-    int storedDay = lastDay.tm_yday; 
-    int storedYear = lastDay.tm_year; 
+    // --- Parameters ---
+    const std::string satellite  = "16";       // "16" or "18"
+    const std::string sector     = "FD";
+    const std::string product    = "GEOCOLOR";
+    const std::string interval   = "daily";    // "hourly", "daily", "weekly", "monthly"
 
     std::filesystem::path dataDir = "./data/";
     //std::filesystem::path dataDir = "/mnt/ssd/GeoSatelliteView/data/";
 
-    std::filesystem::path goes16Path = std::string(dataDir) + "GOES16/";
-    std::filesystem::path goes18Path = std::string(dataDir) + "GOES18/";
+    const std::string satName  = "GOES" + satellite;
+    const std::string comboName = satName + "-" + sector + "-" + product;
+    const std::string imageUrl  = "https://cdn.star.nesdis.noaa.gov/GOES" + satellite
+                                + "/ABI/" + (sector == "FD" ? "FD" : "SECTOR/" + sector)
+                                + "/" + product + "/latest.jpg";
 
-    if (!pathExists(goes16Path)) {
-        std::filesystem::create_directory(goes16Path);
-    } 
+    bool firstRun = true;
+    auto lastTimestamp = std::chrono::steady_clock::now();
 
-    if (!pathExists(goes18Path)) {
-        std::filesystem::create_directory(goes18Path);
-    } 
+    std::time_t t = std::time(nullptr);
+    std::tm last = *std::localtime(&t);
+    int storedHour  = last.tm_hour;
+    int storedDay   = last.tm_yday;
+    int storedYear  = last.tm_year;
+    int storedWeek  = last.tm_yday / 7;
+    int storedMonth = last.tm_mon;
 
-    while (true) { //Main image pulling loop
-        //check if theres at least 10GB disk space
+    while (true) {
         if (!checkDiskSpace(".")) {
-            std::cout << "Not enough disk space left";
+            std::cout << "Not enough disk space left\n";
             break;
         }
 
-        //geostationary satellites: 16, 18
-        std::string satellites[2] = {"16", "18"};
-        const std::string satellite = satellites[0]; //NOAA GOES16 
+        // Current time strings
+        time_t now = time(nullptr);
+        struct tm dt = *localtime(&now);
+        char dateStr[20], timeStr[20], dateTimeStr[40];
+        strftime(dateStr,     sizeof(dateStr),     "%d-%m-%Y",    &dt);
+        strftime(timeStr,     sizeof(timeStr),     "%H-%M-%S",    &dt);
+        snprintf(dateTimeStr, sizeof(dateTimeStr), "%s_%s", timeStr, dateStr);
 
-        //get current time and date
-        time_t timestamp = time(NULL);
-        char todayDate[50];
-        char currentTime[50];
+        // Build paths for this run
+        std::filesystem::path comboDir  = dataDir / satName / interval / comboName;
+        std::filesystem::path dateDir   = comboDir / dateStr;
+        std::filesystem::path imageryDir = dateDir / "imagery";
+        std::filesystem::path outputDir  = dateDir / "output";
 
-        struct tm datetime = *localtime(&timestamp);
-        strftime(todayDate, 50, "%Y-%b-%d", &datetime);
-        strftime(currentTime, 50, "%H-%M-%S", &datetime);
+        createRunDirectories(dataDir, satName, interval, comboName, dateStr);
 
-        auto currentTimestamp = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastTimestamp);
+        // Check if the current period has rolled over — if so, compile timelapse for the last period
+        std::tm cur = *std::localtime(&now);
+        bool periodOver = false;
+        std::string prevDate;
 
-        //check if the direcotry for storing today's images has been created
-        std::filesystem::path currentDir = std::string(std::string(dataDir) + "GOES" + satellite + "/" + todayDate);
-        if (!pathExists(currentDir)) {
-            std::filesystem::create_directory(currentDir);
-        } 
-        
-        //create dir for timelapse output
-        std::filesystem::path timelapseDir = std::string(std::string(dataDir) + "GOES" + satellite + "/timelapses");
-        if (!pathExists(timelapseDir)) {
-            std::filesystem::create_directory(timelapseDir);
-        } 
-
-        //check if today is over
-        std::time_t now = std::time(nullptr);
-        std::tm currentDay = *std::localtime(&now);
-
-        if (currentDay.tm_yday != storedDay || currentDay.tm_year != storedYear) {
-            std::time_t yesterdayTime = now - 86400;
-            std::tm yesterdayTm = *std::localtime(&yesterdayTime);
-            
-            //format yesterdays date
-            char yesterdayBuffer[50];
-            strftime(yesterdayBuffer, 50, "%Y-%b-%d", &yesterdayTm);
-            std::string yesterday = yesterdayBuffer;
-            
-            std::cout << "Creating timelapse for yesterday: " << yesterday << std::endl;
-            
-            //create timelapse for yesterday
-            std::string yesterdayPath = std::string(dataDir) + "GOES" + satellite + "/" + yesterday;
-            std::string timelapseOutput = std::string(timelapseDir) + "/" + yesterday + ".mp4";
-            
-            if (pathExists(yesterdayPath)) {
-                //launch timelapse creation in a separate thread to not stop receiving images
-                std::thread timelapseThread([yesterdayPath, timelapseOutput]() {
-                    makeTimelapse(yesterdayPath, timelapseOutput, 24);
-                });
-                timelapseThread.detach();  
-            }
-            
-            //update stored day
-            storedDay = currentDay.tm_yday;
-            storedYear = currentDay.tm_year;
+        if (interval == "hourly" && cur.tm_hour != storedHour) {
+            periodOver = true;
+            std::time_t prev = now - 3600;
+            std::tm prevTm = *std::localtime(&prev);
+            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
+            prevDate = buf;
+            storedHour = cur.tm_hour;
+        } else if (interval == "daily" && (cur.tm_yday != storedDay || cur.tm_year != storedYear)) {
+            periodOver = true;
+            std::time_t prev = now - 86400;
+            std::tm prevTm = *std::localtime(&prev);
+            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
+            prevDate = buf;
+            storedDay  = cur.tm_yday;
+            storedYear = cur.tm_year;
+        } else if (interval == "weekly" && (cur.tm_yday / 7) != storedWeek) {
+            periodOver = true;
+            std::time_t prev = now - 7 * 86400;
+            std::tm prevTm = *std::localtime(&prev);
+            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
+            prevDate = buf;
+            storedWeek = cur.tm_yday / 7;
+        } else if (interval == "monthly" && cur.tm_mon != storedMonth) {
+            periodOver = true;
+            std::time_t prev = now - 28 * 86400;
+            std::tm prevTm = *std::localtime(&prev);
+            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
+            prevDate = buf;
+            storedMonth = cur.tm_mon;
         }
-        
-        //if 10 min has passed
-        if (duration.count() >= 10 || firstRun) {
-            //image save path
-            std::filesystem::path imageSavePath = std::string(currentDir) + "/" + std::string(currentTime) + ".jpg";
 
-            //save Image
-            const std::string url = "https://cdn.star.nesdis.noaa.gov/GOES" + satellite + "/ABI/FD/GEOCOLOR/latest.jpg";
+        if (periodOver && !prevDate.empty()) {
+            std::filesystem::path prevImagery = comboDir / prevDate / "imagery";
+            std::filesystem::path prevOutput  = comboDir / prevDate / "output";
+            if (pathExists(prevImagery)) {
+                std::thread([prevImagery, prevOutput]() {
+                    compilePeriod(prevImagery, prevOutput);
+                }).detach();
+            }
+        }
+
+        // Fetch image every 10 minutes
+        auto currentTimestamp = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastTimestamp);
+
+        if (elapsed.count() >= 10 || firstRun) {
+            std::filesystem::path imagePath = imageryDir / (std::string(dateTimeStr) + ".jpg");
 
             CURL* curl = curl_easy_init();
             if (!curl) {
@@ -157,22 +145,19 @@ int main() {
                 return 1;
             }
 
-            std::ofstream file(imageSavePath, std::ios::binary);
-            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            std::ofstream file(imagePath, std::ios::binary);
+            curl_easy_setopt(curl, CURLOPT_URL, imageUrl.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
             CURLcode res = curl_easy_perform(curl);
             if (res != CURLE_OK) {
-                std::cerr << "Error receiving GOES " + satellite + ": " 
-                        << curl_easy_strerror(res) 
-                        << " (" << todayDate << " " << currentTime << ")\n";
-
+                std::cerr << "Curl error for " << comboName << ": " << curl_easy_strerror(res) << "\n";
                 file.close();
-                std::filesystem::remove(imageSavePath);
+                std::filesystem::remove(imagePath);
             } else {
-                std::cout << "Received GOES " + std::string(satellite) + " (" + std::string(todayDate) + " " + std::string(currentTime) + ")\n";
+                std::cout << "Saved " << comboName << " " << dateTimeStr << "\n";
             }
 
             curl_easy_cleanup(curl);
@@ -183,7 +168,7 @@ int main() {
         }
 
         std::this_thread::sleep_for(std::chrono::seconds(30));
-    }   
+    }
 
     return 0;
 }

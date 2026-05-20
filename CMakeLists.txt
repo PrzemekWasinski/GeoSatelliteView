@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(SOURCES
     src/main.cpp
     src/timelapse.cpp
+    src/fileFunctions.cpp
 )
 
 #output folder
