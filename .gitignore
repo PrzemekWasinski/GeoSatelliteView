@@ -1,9 +1,9 @@
-/data/GOES16
-/data/GOES18
+data/*
 
-build/
+build/*
 
-/tests/api_test/*
+tests/api_test/api_test/*
+
 *.o
 *.so
 *.a
@@ -13,5 +13,3 @@ build/
 *.DS_Store
 *.idea/
 .vscode/
-
-*.log

@@ -8,13 +8,36 @@
 #include <filesystem>
 #include <thread>
 #include <sys/statvfs.h>
+#include <random>
+#include <vector>
 
 #include "../include/timelapse.h"
 #include "../include/fileFunctions.h"
+#include "../include/configReader.h"
+#include "../config/satellites.h"
+
+static SatelliteConfig pickRandom(const std::vector<SatelliteConfig>& list) {
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<size_t> dist(0, list.size() - 1);
+    return list[dist(rng)];
+}
+
+static std::string longestEnabled(const Config& cfg) {
+    if (cfg.monthly) return "monthly";
+    if (cfg.weekly)  return "weekly";
+    if (cfg.daily)   return "daily";
+    return "hourly";
+}
 
 size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
     std::ofstream* out = static_cast<std::ofstream*>(stream);
     out->write(static_cast<char*>(ptr), size * nmemb);
+    return size * nmemb;
+}
+
+size_t write_to_buffer(void* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<std::vector<char>*>(userdata);
+    buf->insert(buf->end(), static_cast<char*>(ptr), static_cast<char*>(ptr) + size * nmemb);
     return size * nmemb;
 }
 
@@ -30,39 +53,49 @@ bool checkDiskSpace(const char* path = "/mnt/ssd") {
     return availableGB >= 10;
 }
 
-// Compile timelapse then remove imagery folder
-void compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir) {
+void compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir, bool deleteImages) {
     std::string outputFile = std::string(outputDir) + "/output.mkv";
     std::filesystem::create_directories(outputDir);
     makeTimelapse(std::string(imageryDir), outputFile, 24);
+    if (deleteImages)
+        std::filesystem::remove_all(imageryDir);
 }
 
 int main() {
-    // --- Parameters ---
-    const std::string satellite  = "16";       // "16" or "18"
-    const std::string sector     = "FD";
-    const std::string product    = "GEOCOLOR";
-    const std::string interval   = "daily";    // "hourly", "daily", "weekly", "monthly"
+    Config cfg = readConfig("./config/config.yml");
 
+    if (!cfg.hourly && !cfg.daily && !cfg.weekly && !cfg.monthly) {
+        std::cerr << "No timelapse interval enabled in config.yml\n";
+        return 1;
+    }
+
+    if (cfg.randomSatellite && SATELLITE_LIST.empty()) {
+        std::cerr << "Satellite list is empty — run tests/parse_log.py first\n";
+        return 1;
+    }
+
+    SatelliteConfig currentSat = cfg.randomSatellite ? pickRandom(SATELLITE_LIST) : cfg.fixedSatellite;
+    const std::string longest = longestEnabled(cfg);
     std::filesystem::path dataDir = "./data/";
     //std::filesystem::path dataDir = "/mnt/ssd/GeoSatelliteView/data/";
 
-    const std::string satName  = "GOES" + satellite;
-    const std::string comboName = satName + "-" + sector + "-" + product;
-    const std::string imageUrl  = "https://cdn.star.nesdis.noaa.gov/GOES" + satellite
-                                + "/ABI/" + (sector == "FD" ? "FD" : "SECTOR/" + sector)
-                                + "/" + product + "/latest.jpg";
+    // Build the list of enabled intervals once
+    std::vector<std::string> activeIntervals;
+    if (cfg.hourly)  activeIntervals.push_back("hourly");
+    if (cfg.daily)   activeIntervals.push_back("daily");
+    if (cfg.weekly)  activeIntervals.push_back("weekly");
+    if (cfg.monthly) activeIntervals.push_back("monthly");
+
+    // Period trackers
+    std::time_t initTime = std::time(nullptr);
+    std::tm initTm = *std::localtime(&initTime);
+    int storedHour  = initTm.tm_hour;
+    int storedDay   = initTm.tm_yday + initTm.tm_year * 366;
+    int storedWeek  = initTm.tm_yday / 7 + initTm.tm_year * 53;
+    int storedMonth = initTm.tm_mon  + initTm.tm_year * 12;
 
     bool firstRun = true;
-    auto lastTimestamp = std::chrono::steady_clock::now();
-
-    std::time_t t = std::time(nullptr);
-    std::tm last = *std::localtime(&t);
-    int storedHour  = last.tm_hour;
-    int storedDay   = last.tm_yday;
-    int storedYear  = last.tm_year;
-    int storedWeek  = last.tm_yday / 7;
-    int storedMonth = last.tm_mon;
+    auto lastImageFetch = std::chrono::steady_clock::now();
 
     while (true) {
         if (!checkDiskSpace(".")) {
@@ -70,100 +103,96 @@ int main() {
             break;
         }
 
-        // Current time strings
         time_t now = time(nullptr);
         struct tm dt = *localtime(&now);
         char dateStr[20], timeStr[20], dateTimeStr[40];
-        strftime(dateStr,     sizeof(dateStr),     "%d-%m-%Y",    &dt);
-        strftime(timeStr,     sizeof(timeStr),     "%H-%M-%S",    &dt);
+        strftime(dateStr,     sizeof(dateStr),     "%d-%m-%Y", &dt);
+        strftime(timeStr,     sizeof(timeStr),     "%H-%M-%S", &dt);
         snprintf(dateTimeStr, sizeof(dateTimeStr), "%s_%s", timeStr, dateStr);
 
-        // Build paths for this run
-        std::filesystem::path comboDir  = dataDir / satName / interval / comboName;
-        std::filesystem::path dateDir   = comboDir / dateStr;
-        std::filesystem::path imageryDir = dateDir / "imagery";
-        std::filesystem::path outputDir  = dateDir / "output";
+        // Handle period rollovers — capture satellite info before any potential switch
+        auto handleRollover = [&](const std::string& intervalName, std::time_t prevOffset) {
+            std::string thisSat   = currentSat.satellite;
+            std::string thisCombo = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
 
-        createRunDirectories(dataDir, satName, interval, comboName, dateStr);
+            std::time_t prevTime = now - prevOffset;
+            std::tm prevTm = *std::localtime(&prevTime);
+            char prevDateBuf[20];
+            strftime(prevDateBuf, sizeof(prevDateBuf), "%d-%m-%Y", &prevTm);
 
-        // Check if the current period has rolled over — if so, compile timelapse for the last period
-        std::tm cur = *std::localtime(&now);
-        bool periodOver = false;
-        std::string prevDate;
+            std::filesystem::path prevImagery = dataDir / thisSat / intervalName / thisCombo / prevDateBuf / "imagery";
+            std::filesystem::path prevOutput  = dataDir / thisSat / intervalName / thisCombo / prevDateBuf / "output";
 
-        if (interval == "hourly" && cur.tm_hour != storedHour) {
-            periodOver = true;
-            std::time_t prev = now - 3600;
-            std::tm prevTm = *std::localtime(&prev);
-            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
-            prevDate = buf;
-            storedHour = cur.tm_hour;
-        } else if (interval == "daily" && (cur.tm_yday != storedDay || cur.tm_year != storedYear)) {
-            periodOver = true;
-            std::time_t prev = now - 86400;
-            std::tm prevTm = *std::localtime(&prev);
-            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
-            prevDate = buf;
-            storedDay  = cur.tm_yday;
-            storedYear = cur.tm_year;
-        } else if (interval == "weekly" && (cur.tm_yday / 7) != storedWeek) {
-            periodOver = true;
-            std::time_t prev = now - 7 * 86400;
-            std::tm prevTm = *std::localtime(&prev);
-            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
-            prevDate = buf;
-            storedWeek = cur.tm_yday / 7;
-        } else if (interval == "monthly" && cur.tm_mon != storedMonth) {
-            periodOver = true;
-            std::time_t prev = now - 28 * 86400;
-            std::tm prevTm = *std::localtime(&prev);
-            char buf[20]; strftime(buf, sizeof(buf), "%d-%m-%Y", &prevTm);
-            prevDate = buf;
-            storedMonth = cur.tm_mon;
-        }
-
-        if (periodOver && !prevDate.empty()) {
-            std::filesystem::path prevImagery = comboDir / prevDate / "imagery";
-            std::filesystem::path prevOutput  = comboDir / prevDate / "output";
             if (pathExists(prevImagery)) {
-                std::thread([prevImagery, prevOutput]() {
-                    compilePeriod(prevImagery, prevOutput);
+                bool del = cfg.deleteAfterTimelapse;
+                std::thread([prevImagery, prevOutput, del]() {
+                    compilePeriod(prevImagery, prevOutput, del);
                 }).detach();
             }
-        }
 
-        // Fetch image every 10 minutes
+            if (intervalName == longest && cfg.randomSatellite) {
+                currentSat = pickRandom(SATELLITE_LIST);
+                std::cout << "Switched to " << currentSat.satellite
+                          << " " << currentSat.sector
+                          << " " << currentSat.product << "\n";
+            }
+        };
+
+        int curHour  = dt.tm_hour;
+        int curDay   = dt.tm_yday + dt.tm_year * 366;
+        int curWeek  = dt.tm_yday / 7 + dt.tm_year * 53;
+        int curMonth = dt.tm_mon  + dt.tm_year * 12;
+
+        if (cfg.hourly  && curHour  != storedHour)  { handleRollover("hourly",  3600);      storedHour  = curHour;  }
+        if (cfg.daily   && curDay   != storedDay)   { handleRollover("daily",   86400);     storedDay   = curDay;   }
+        if (cfg.weekly  && curWeek  != storedWeek)  { handleRollover("weekly",  7*86400);   storedWeek  = curWeek;  }
+        if (cfg.monthly && curMonth != storedMonth) { handleRollover("monthly", 30*86400);  storedMonth = curMonth; }
+
+        // Recompute satellite-dependent strings after potential switch
+        std::string satNum    = currentSat.satellite.substr(4); // "16" or "18"
+        std::string comboName = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
+        std::string imageUrl  = "https://cdn.star.nesdis.noaa.gov/GOES" + satNum
+                              + "/ABI/" + (currentSat.sector == "FD" ? "FD" : "SECTOR/" + currentSat.sector)
+                              + "/" + currentSat.product + "/latest.jpg";
+
+        // Create directories for each enabled interval
+        for (const auto& interval : activeIntervals)
+            createRunDirectories(dataDir, currentSat.satellite, interval, comboName, dateStr);
+
+        // Fetch image if enough time has passed — download once, write to all interval dirs
         auto currentTimestamp = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastTimestamp);
+        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastImageFetch);
 
-        if (elapsed.count() >= 10 || firstRun) {
-            std::filesystem::path imagePath = imageryDir / (std::string(dateTimeStr) + ".jpg");
-
+        if (elapsed.count() >= cfg.pullIntervalMinutes || firstRun) {
             CURL* curl = curl_easy_init();
             if (!curl) {
                 std::cerr << "Failed to init curl\n";
                 return 1;
             }
 
-            std::ofstream file(imagePath, std::ios::binary);
+            std::vector<char> imgBuffer;
             curl_easy_setopt(curl, CURLOPT_URL, imageUrl.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_buffer);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &imgBuffer);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
             CURLcode res = curl_easy_perform(curl);
+            curl_easy_cleanup(curl);
+
             if (res != CURLE_OK) {
                 std::cerr << "Curl error for " << comboName << ": " << curl_easy_strerror(res) << "\n";
-                file.close();
-                std::filesystem::remove(imagePath);
             } else {
+                std::string filename = std::string(dateTimeStr) + ".jpg";
+                for (const auto& interval : activeIntervals) {
+                    std::filesystem::path imagePath = dataDir / currentSat.satellite / interval
+                                                    / comboName / dateStr / "imagery" / filename;
+                    std::ofstream file(imagePath, std::ios::binary);
+                    file.write(imgBuffer.data(), imgBuffer.size());
+                }
                 std::cout << "Saved " << comboName << " " << dateTimeStr << "\n";
             }
 
-            curl_easy_cleanup(curl);
-            file.close();
-
-            lastTimestamp = currentTimestamp;
+            lastImageFetch = currentTimestamp;
             firstRun = false;
         }
 

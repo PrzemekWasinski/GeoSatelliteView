@@ -1,12 +1,22 @@
 #How often do you want images to be compiled?
-Hourly: false
-Daily: true
-Weekly: false
-Monthly: false
+Hourly: False
+Daily: True
+Weekly: False
+Monthly: False
 
 #How often do you want images to be pulled (Minutes):
 Interval: 10
 
-#Choose a satellite, sector and product/radio band or set to None for random
-#Format: [GOES18, PNW, AirMass]
+#Choose a `satellite`, `sector` and `product`/`radio band` or set to None for random.
+
+#If random: The satellite configuration will be switched randomly after the longest compilation time e.g:
+#If you have `Hourly` and `Daily` set to true a new satellite configuration will be randomly selected 
+#after `daily` images are compiled.
+
+#Format: `[GOES18, PNW, AirMass]` or `None`
 Satellite: None
+
+#Delete images after creating timelapse?
+Delete: True
+
+#You will have to re-run the program after modifying this config file!

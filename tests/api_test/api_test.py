@@ -10,6 +10,7 @@ DOWNLOAD_IMAGES = False  # True: download and store images  False: log results o
 #All possible parameter values
 GOES16_SECTORS = ["FD", "CONUS", "AK", "HI", "PR", "GS"]  # GOES-East
 GOES18_SECTORS = ["FD", "AK", "HI", "NP", "PNW", "PSW", "WUS", "EEP"]  # GOES-West
+#GOES19_SECTORS = ["FD", "CONUS", "AK", "HI", "PR", "GS"]  #GOES-East
 
 COMPOSITE_PRODUCTS = [
     "GEOCOLOR", "AirMass", "DayConvection", "DayLandCloudFire",
@@ -23,6 +24,7 @@ LOG_FILE    = os.path.join(os.path.dirname(__file__), "api_test.log")
 MAX_WORKERS = 12
 
 SECTORS_BY_SAT = {"16": GOES16_SECTORS, "18": GOES18_SECTORS}
+#SECTORS_BY_SAT = {"16": GOES16_SECTORS, "18": GOES18_SECTORS, "19": GOES19_SECTORS}
 
 logging.basicConfig(
     filename=LOG_FILE,

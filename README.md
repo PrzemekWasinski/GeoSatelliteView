@@ -6,15 +6,4 @@ GeostationaryvSatellite View is program that receives live satellite images of E
 
 https://github.com/user-attachments/assets/24c6d048-e6a6-46e5-83bf-a6f6c49b1c12
 
-You can leave this program running on a Raspbery Pi 24/7 and it'll automatically receive satellite imagery and create an 24 hour visualisation of Earth every midnight, here's how:
-1) SSH into your Raspberry Pi/Computer
-2) Clone this repository by running `git clone https://github.com/PrzemekWasinski/GeoSatelliteView/`
-3) Switch to this repository: `cd ./GeoSatelliteView`
-4) Compile by running: `cd ./build/ && cmake . && make -C . && cd ..`
-5) Start the program: `nohup ./build/output/main > /dev/null 2>&1 &`
-6) Close your SSH session
-
-The program will run endlessly and all satellite imagery and videos will be found in the `data` directory.
-
-
 

@@ -10,6 +10,7 @@ set(SOURCES
     src/main.cpp
     src/timelapse.cpp
     src/fileFunctions.cpp
+    src/configReader.cpp
 )
 
 #output folder
