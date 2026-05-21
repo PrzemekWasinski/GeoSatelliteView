@@ -13,3 +13,5 @@ tests/api_test/api_test/*
 *.DS_Store
 *.idea/
 .vscode/
+
+*.log

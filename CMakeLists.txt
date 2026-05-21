@@ -11,6 +11,7 @@ set(SOURCES
     src/timelapse.cpp
     src/fileFunctions.cpp
     src/configReader.cpp
+    src/logger.cpp
 )
 
 #output folder
