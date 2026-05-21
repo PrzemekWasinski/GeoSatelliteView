@@ -1,4 +1,8 @@
-#How often do you want images to be compiled?
+#How often do you want images to be compiled (Can select multiple):
+#If you select multiple (for example hourly and daily) and the progam starts at 4pm, a timelapse will be made
+#for 4pm-5pm and for 4pm-4pm (next day) so 2 timelapses. After this if you have selected `Sequential` or `Random`
+#as the satellite configuration, the program will switch the satellite configuration after the longest timelapse
+#has been made (in this case it would be daily).
 Hourly: False
 Daily: True
 Weekly: False
@@ -8,12 +12,21 @@ Monthly: False
 Interval: 10
 
 #Choose a satellite configuration:
-# Random - picks a random configuration from config/satellites.h after each longest-interval timelapse
-# Sequential - steps through config/satellites.h in order
-# [GOES18, PNW, AirMass] - always use a fixed configuration 
+#Random - picks a random configuration from config/satellites.h after each longest-interval timelapse
+#Sequential - steps through config/satellites.h in order after each longest-interval timelapse
+#[GOES18, PNW, AirMass] - always use a certain configuration 
 Satellite: Sequential
 
 #Delete images after creating timelapse?
 Delete: True
+
+#Lets say you run this program at 2am and it stops at 5am. When you re-run it at 11am
+#do you want to keep using imagery from 2am-5am (True) or do you want to discard it and start over (False).
+UseIncompleteImages: False
+
+#Path to the directory where the data folder will be created,
+#e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
+#Use `.` to store images in the project dir.
+DataPath: .
 
 #You will have to re-run the program after modifying this config file!

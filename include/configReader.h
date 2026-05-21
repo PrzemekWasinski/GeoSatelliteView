@@ -20,6 +20,8 @@ struct Config {
     SatelliteMode satelliteMode = SatelliteMode::RANDOM;
     SatelliteConfig fixedSatellite;
     bool deleteAfterTimelapse = false;
+    bool useOldImages = false;
+    std::string dataPath = ".";
 };
 
 Config readConfig(const std::string& path);

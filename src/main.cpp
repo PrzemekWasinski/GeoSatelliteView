@@ -112,14 +112,40 @@ int main() {
     }
 
     const std::string longest = longestEnabled(cfg);
-    std::filesystem::path dataDir = "./data/";
-    //std::filesystem::path dataDir = "/mnt/ssd/GeoSatelliteView/data/";
+    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
 
     std::vector<std::string> activeIntervals;
     if (cfg.hourly)  activeIntervals.push_back("hourly");
     if (cfg.daily)   activeIntervals.push_back("daily");
     if (cfg.weekly)  activeIntervals.push_back("weekly");
     if (cfg.monthly) activeIntervals.push_back("monthly");
+
+    // Handle existing imagery from a previous incomplete run
+    {
+        std::time_t initNow = std::time(nullptr);
+        char initDateStr[20];
+        strftime(initDateStr, sizeof(initDateStr), "%d-%m-%Y", std::localtime(&initNow));
+        std::string initCombo = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
+
+        for (const auto& interval : activeIntervals) {
+            std::filesystem::path imageryDir = dataDir / currentSat.satellite / interval / initCombo / initDateStr / "imagery";
+            if (!pathExists(imageryDir)) continue;
+
+            bool hasImages = false;
+            for (const auto& entry : std::filesystem::directory_iterator(imageryDir))
+                if (entry.is_regular_file()) { hasImages = true; break; }
+
+            if (!hasImages) continue;
+
+            if (cfg.useOldImages) {
+                logInfo("Resuming with existing imagery [" + interval + "]: " + std::string(imageryDir));
+            } else {
+                std::filesystem::remove_all(imageryDir);
+                std::filesystem::create_directories(imageryDir);
+                logInfo("Cleared existing imagery [" + interval + "]: " + std::string(imageryDir));
+            }
+        }
+    }
 
     std::time_t initTime = std::time(nullptr);
     std::tm initTm = *std::localtime(&initTime);
@@ -132,11 +158,6 @@ int main() {
     auto lastImageFetch = std::chrono::steady_clock::now();
 
     while (true) {
-        if (!checkDiskSpace(".")) {
-            logError("Less than 10 GB remaining - stopping");
-            break;
-        }
-
         time_t now = time(nullptr);
         struct tm dt = *localtime(&now);
         char dateStr[20], timeStr[20], dateTimeStr[40];
@@ -205,6 +226,11 @@ int main() {
         auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastImageFetch);
 
         if (elapsed.count() >= cfg.pullIntervalMinutes || firstRun) {
+            if (!checkDiskSpace(dataDir.c_str())) {
+                logError("Less than 10 GB remaining on data path - stopping");
+                break;
+            }
+
             CURL* curl = curl_easy_init();
             if (!curl) {
                 logError("Failed to initialise curl");

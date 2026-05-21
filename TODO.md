@@ -1,5 +1,6 @@
 ### To Do:
-- Update `README.md`
+- Add more example outputs in `README.md`
+- Clear old images script
 
 ### Optional:
 - Add GUI 

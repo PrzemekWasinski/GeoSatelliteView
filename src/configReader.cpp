@@ -37,7 +37,9 @@ Config readConfig(const std::string& path) {
         else if (key == "Weekly")   cfg.weekly   = parseBool(val);
         else if (key == "Monthly")  cfg.monthly  = parseBool(val);
         else if (key == "Interval") cfg.pullIntervalMinutes = std::stoi(val);
-        else if (key == "Delete")   cfg.deleteAfterTimelapse = parseBool(val);
+        else if (key == "Delete")        cfg.deleteAfterTimelapse = parseBool(val);
+        else if (key == "UseOldImages")  cfg.useOldImages = parseBool(val);
+        else if (key == "DataPath")      cfg.dataPath = val;
         else if (key == "Satellite") {
             if (val == "None" || val == "Random") {
                 cfg.satelliteMode = SatelliteMode::RANDOM;
