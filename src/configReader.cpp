@@ -39,11 +39,12 @@ Config readConfig(const std::string& path) {
         else if (key == "Interval") cfg.pullIntervalMinutes = std::stoi(val);
         else if (key == "Delete")   cfg.deleteAfterTimelapse = parseBool(val);
         else if (key == "Satellite") {
-            if (val == "None") {
-                cfg.randomSatellite = true;
+            if (val == "None" || val == "Random") {
+                cfg.satelliteMode = SatelliteMode::RANDOM;
+            } else if (val == "Sequential") {
+                cfg.satelliteMode = SatelliteMode::SEQUENTIAL;
             } else {
-                cfg.randomSatellite = false;
-                // Parse [GOES18, PNW, AirMass]
+                cfg.satelliteMode = SatelliteMode::FIXED;
                 val.erase(std::remove(val.begin(), val.end(), '['), val.end());
                 val.erase(std::remove(val.begin(), val.end(), ']'), val.end());
                 std::istringstream ss(val);
@@ -57,4 +58,16 @@ Config readConfig(const std::string& path) {
         }
     }
     return cfg;
+}
+
+int readSatelliteIndex(const std::string& path) {
+    std::ifstream f(path);
+    int idx = 0;
+    if (f) f >> idx;
+    return idx;
+}
+
+void writeSatelliteIndex(const std::string& path, int index) {
+    std::ofstream f(path);
+    f << index;
 }

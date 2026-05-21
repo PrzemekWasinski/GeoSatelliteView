@@ -4,22 +4,26 @@
 #include <string>
 
 struct SatelliteConfig {
-    std::string satellite; //"GOES16" or "GOES18"
-    std::string sector; //"FD", "AK", etc.
-    std::string product; //"GEOCOLOR", "AirMass", "01", etc.
+    std::string satellite; // "GOES16", "GOES18", "GOES19"
+    std::string sector;    // "FD", "AK", etc.
+    std::string product;   // "GEOCOLOR", "AirMass", "01", etc.
 };
 
+enum class SatelliteMode { FIXED, RANDOM, SEQUENTIAL };
+
 struct Config {
-    bool hourly = false;
-    bool daily = false;
-    bool weekly = false;
+    bool hourly  = false;
+    bool daily   = false;
+    bool weekly  = false;
     bool monthly = false;
     int  pullIntervalMinutes = 10;
-    bool randomSatellite = true;
+    SatelliteMode satelliteMode = SatelliteMode::RANDOM;
     SatelliteConfig fixedSatellite;
     bool deleteAfterTimelapse = false;
 };
 
 Config readConfig(const std::string& path);
+int    readSatelliteIndex(const std::string& path);
+void   writeSatelliteIndex(const std::string& path, int index);
 
 #endif

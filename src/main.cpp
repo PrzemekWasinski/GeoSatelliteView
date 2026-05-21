@@ -29,12 +29,6 @@ static std::string longestEnabled(const Config& cfg) {
     return "hourly";
 }
 
-size_t write_data(void* ptr, size_t size, size_t nmemb, void* stream) {
-    std::ofstream* out = static_cast<std::ofstream*>(stream);
-    out->write(static_cast<char*>(ptr), size * nmemb);
-    return size * nmemb;
-}
-
 size_t write_to_buffer(void* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* buf = static_cast<std::vector<char>*>(userdata);
     buf->insert(buf->end(), static_cast<char*>(ptr), static_cast<char*>(ptr) + size * nmemb);
@@ -63,30 +57,47 @@ void compilePeriod(const std::filesystem::path& imageryDir, const std::filesyste
 
 int main() {
     Config cfg = readConfig("./config/config.yml");
+    const std::string indexFile = "./config/satellite_index.txt";
 
     if (!cfg.hourly && !cfg.daily && !cfg.weekly && !cfg.monthly) {
         std::cerr << "No timelapse interval enabled in config.yml\n";
         return 1;
     }
 
-    if (cfg.randomSatellite && SATELLITE_LIST.empty()) {
+    if (cfg.satelliteMode != SatelliteMode::FIXED && SATELLITE_LIST.empty()) {
         std::cerr << "Satellite list is empty — run tests/parse_log.py first\n";
         return 1;
     }
 
-    SatelliteConfig currentSat = cfg.randomSatellite ? pickRandom(SATELLITE_LIST) : cfg.fixedSatellite;
+    // Initialise satellite — sequential resumes from the saved index
+    int satIndex = 0;
+    SatelliteConfig currentSat;
+
+    switch (cfg.satelliteMode) {
+        case SatelliteMode::RANDOM:
+            currentSat = pickRandom(SATELLITE_LIST);
+            break;
+        case SatelliteMode::SEQUENTIAL:
+            satIndex   = readSatelliteIndex(indexFile) % static_cast<int>(SATELLITE_LIST.size());
+            currentSat = SATELLITE_LIST[satIndex];
+            std::cout << "Resuming sequential at index " << satIndex
+                      << " (" << currentSat.satellite << " " << currentSat.sector << " " << currentSat.product << ")\n";
+            break;
+        case SatelliteMode::FIXED:
+            currentSat = cfg.fixedSatellite;
+            break;
+    }
+
     const std::string longest = longestEnabled(cfg);
     std::filesystem::path dataDir = "./data/";
     //std::filesystem::path dataDir = "/mnt/ssd/GeoSatelliteView/data/";
 
-    // Build the list of enabled intervals once
     std::vector<std::string> activeIntervals;
     if (cfg.hourly)  activeIntervals.push_back("hourly");
     if (cfg.daily)   activeIntervals.push_back("daily");
     if (cfg.weekly)  activeIntervals.push_back("weekly");
     if (cfg.monthly) activeIntervals.push_back("monthly");
 
-    // Period trackers
     std::time_t initTime = std::time(nullptr);
     std::tm initTm = *std::localtime(&initTime);
     int storedHour  = initTm.tm_hour;
@@ -110,8 +121,8 @@ int main() {
         strftime(timeStr,     sizeof(timeStr),     "%H-%M-%S", &dt);
         snprintf(dateTimeStr, sizeof(dateTimeStr), "%s_%s", timeStr, dateStr);
 
-        // Handle period rollovers — capture satellite info before any potential switch
         auto handleRollover = [&](const std::string& intervalName, std::time_t prevOffset) {
+            // Capture old satellite info before any potential switch
             std::string thisSat   = currentSat.satellite;
             std::string thisCombo = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
 
@@ -130,11 +141,18 @@ int main() {
                 }).detach();
             }
 
-            if (intervalName == longest && cfg.randomSatellite) {
-                currentSat = pickRandom(SATELLITE_LIST);
-                std::cout << "Switched to " << currentSat.satellite
-                          << " " << currentSat.sector
-                          << " " << currentSat.product << "\n";
+            if (intervalName == longest) {
+                if (cfg.satelliteMode == SatelliteMode::RANDOM) {
+                    currentSat = pickRandom(SATELLITE_LIST);
+                    std::cout << "Random switch -> " << currentSat.satellite
+                              << " " << currentSat.sector << " " << currentSat.product << "\n";
+                } else if (cfg.satelliteMode == SatelliteMode::SEQUENTIAL) {
+                    satIndex   = (satIndex + 1) % static_cast<int>(SATELLITE_LIST.size());
+                    currentSat = SATELLITE_LIST[satIndex];
+                    writeSatelliteIndex(indexFile, satIndex);
+                    std::cout << "Sequential switch [" << satIndex << "] -> " << currentSat.satellite
+                              << " " << currentSat.sector << " " << currentSat.product << "\n";
+                }
             }
         };
 
@@ -143,23 +161,21 @@ int main() {
         int curWeek  = dt.tm_yday / 7 + dt.tm_year * 53;
         int curMonth = dt.tm_mon  + dt.tm_year * 12;
 
-        if (cfg.hourly  && curHour  != storedHour)  { handleRollover("hourly",  3600);      storedHour  = curHour;  }
-        if (cfg.daily   && curDay   != storedDay)   { handleRollover("daily",   86400);     storedDay   = curDay;   }
-        if (cfg.weekly  && curWeek  != storedWeek)  { handleRollover("weekly",  7*86400);   storedWeek  = curWeek;  }
-        if (cfg.monthly && curMonth != storedMonth) { handleRollover("monthly", 30*86400);  storedMonth = curMonth; }
+        if (cfg.hourly  && curHour  != storedHour)  { handleRollover("hourly",  3600);     storedHour  = curHour;  }
+        if (cfg.daily   && curDay   != storedDay)   { handleRollover("daily",   86400);    storedDay   = curDay;   }
+        if (cfg.weekly  && curWeek  != storedWeek)  { handleRollover("weekly",  7*86400);  storedWeek  = curWeek;  }
+        if (cfg.monthly && curMonth != storedMonth) { handleRollover("monthly", 30*86400); storedMonth = curMonth; }
 
-        // Recompute satellite-dependent strings after potential switch
-        std::string satNum    = currentSat.satellite.substr(4); // "16" or "18"
+        // Recompute after potential satellite switch
+        std::string satNum    = currentSat.satellite.substr(4);
         std::string comboName = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
         std::string imageUrl  = "https://cdn.star.nesdis.noaa.gov/GOES" + satNum
                               + "/ABI/" + (currentSat.sector == "FD" ? "FD" : "SECTOR/" + currentSat.sector)
                               + "/" + currentSat.product + "/latest.jpg";
 
-        // Create directories for each enabled interval
         for (const auto& interval : activeIntervals)
             createRunDirectories(dataDir, currentSat.satellite, interval, comboName, dateStr);
 
-        // Fetch image if enough time has passed — download once, write to all interval dirs
         auto currentTimestamp = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastImageFetch);
 
