@@ -2,6 +2,8 @@ data/*
 build/*
 test/*
 
+temp/
+
 *.o
 *.so
 *.a

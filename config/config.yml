@@ -27,6 +27,6 @@ UseIncompleteImages: False
 #Path to the directory where the data folder will be created,
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
 #Use `.` to store images in the project dir.
-DataPath: .
+DataPath: /mnt/ssd/GeoSatelliteView/
 
 #You will have to re-run the program after modifying this config file!

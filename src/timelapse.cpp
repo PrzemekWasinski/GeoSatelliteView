@@ -7,9 +7,9 @@
 
 #include "../include/timelapse.h"
 
-void makeTimelapse(const std::string& folderPath, const std::string& outputFile, int fps) {
+bool makeTimelapse(const std::string& folderPath, const std::string& outputFile, int fps) {
     std::vector<std::string> imageFiles;
-    
+
     //collect image paths
     for (const auto& entry : std::filesystem::directory_iterator(folderPath)) {
         if (entry.is_regular_file()) {
@@ -19,40 +19,49 @@ void makeTimelapse(const std::string& folderPath, const std::string& outputFile,
             }
         }
     }
-    
-    //sort images alphabetically
+
+    //sort images alphabetically (filenames are ISO-ordered, so this is chronological)
     std::sort(imageFiles.begin(), imageFiles.end());
-    
+
     if (imageFiles.empty()) {
         std::cerr << "No images found" << std::endl;
-        return;
+        return false;
     }
-    
-    //load first image to get size
-    cv::Mat firstFrame = cv::imread(imageFiles[0]);
-    
-    //resize if too large 
-    int maxDim = 2048;  
+
+    //find the first image that actually decodes - corrupt/incomplete downloads are skipped
+    cv::Mat firstFrame;
+    for (const auto& file : imageFiles) {
+        firstFrame = cv::imread(file);
+        if (!firstFrame.empty()) break;
+    }
+    if (firstFrame.empty()) {
+        std::cerr << "No decodable images found in " << folderPath << std::endl;
+        return false;
+    }
+
+    //resize if too large
+    int maxDim = 2048;
     cv::Size frameSize = firstFrame.size();
-    
+
     if (firstFrame.cols > maxDim || firstFrame.rows > maxDim) {
-        double scale = std::min((double)maxDim / firstFrame.cols, 
+        double scale = std::min((double)maxDim / firstFrame.cols,
                                 (double)maxDim / firstFrame.rows);
         frameSize = cv::Size(firstFrame.cols * scale, firstFrame.rows * scale);
         std::cout << "Resizing from " << firstFrame.size() << " to " << frameSize << std::endl;
     }
-    
+
     cv::VideoWriter writer(outputFile,
-                       cv::VideoWriter::fourcc('M','J','P','G'), 
+                       cv::VideoWriter::fourcc('M','J','P','G'),
                        fps,
                        frameSize);
-    
+
     if (!writer.isOpened()) {
         std::cerr << "Failed to open video writer!" << std::endl;
-        return;
+        return false;
     }
-    
-    //write frames
+
+    //write frames, skipping any that fail to decode
+    int written = 0;
     for (const auto& file : imageFiles) {
         cv::Mat img = cv::imread(file);
         if (!img.empty()) {
@@ -61,13 +70,19 @@ void makeTimelapse(const std::string& folderPath, const std::string& outputFile,
                 cv::resize(img, img, frameSize);
             }
             writer.write(img);
+            ++written;
             //"." for each frame
-            std::cout << "." << std::flush;  
+            std::cout << "." << std::flush;
         }
     }
-    
+
     writer.release();
+    if (written == 0) {
+        std::cerr << "\nNo frames written for " << folderPath << std::endl;
+        return false;
+    }
     std::cout << "\nTimelapse saved to " << outputFile << std::endl;
+    return true;
 }
 
 //main function for testing with custom input/output paths
