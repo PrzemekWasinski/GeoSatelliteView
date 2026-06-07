@@ -278,6 +278,14 @@ int main() {
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_buffer);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &imgBuffer);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            // Without these, a stalled connection (common on Wi-Fi) blocks
+            // curl_easy_perform forever and freezes the whole single-threaded loop.
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L); // max time to establish connection
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);       // max time for the whole transfer
+            // Abort if transfer drops below 100 B/s for 30s (catches mid-download stalls).
+            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+            curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);        // timeouts must not rely on signals
 
             CURLcode res = curl_easy_perform(curl);
             long httpCode = 0;
