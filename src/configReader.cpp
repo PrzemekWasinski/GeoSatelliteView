@@ -40,6 +40,10 @@ Config readConfig(const std::string& path) {
         else if (key == "Delete")        cfg.deleteAfterTimelapse = parseBool(val);
         else if (key == "UseOldImages")  cfg.useOldImages = parseBool(val);
         else if (key == "DataPath")      cfg.dataPath = val;
+        else if (key == "Format") {
+            std::transform(val.begin(), val.end(), val.begin(), ::toupper);
+            cfg.format = val;
+        }
         else if (key == "Satellite") {
             if (val == "None" || val == "Random") {
                 cfg.satelliteMode = SatelliteMode::RANDOM;

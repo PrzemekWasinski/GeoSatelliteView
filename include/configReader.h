@@ -22,6 +22,7 @@ struct Config {
     bool deleteAfterTimelapse = false;
     bool useOldImages = false;
     std::string dataPath = ".";
+    std::string format = "MP4";
 };
 
 Config readConfig(const std::string& path);

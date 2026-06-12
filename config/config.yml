@@ -28,5 +28,12 @@ UseIncompleteImages: False
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
 #Use `.` to store images in the project dir.
 DataPath: /mnt/ssd/GeoSatelliteView/
+#Output format for timelapse videos:
+#AVI   - Motion JPEG (.avi)  - universally compatible, large files
+#MP4   - MPEG-4 (.mp4)       - widely supported, good compression
+#MKV   - MPEG-4 in Matroska (.mkv) - flexible container, good for archiving
+#WEBM  - VP8 (.webm)         - open format, browser/web-friendly
+#H264  - H.264 (.mp4)        - best compression, requires H.264 encoder
+Format: MP4
 
 #You will have to re-run the program after modifying this config file!

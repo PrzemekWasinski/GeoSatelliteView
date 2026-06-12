@@ -51,11 +51,11 @@ bool checkDiskSpace(const char* path = ".") {
     return availableGB >= 10;
 }
 
-bool compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir, bool deleteImages) {
-    std::string outputFile = std::string(outputDir) + "/output.mkv";
+bool compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir, bool deleteImages, const std::string& format) {
+    std::string outputFile = std::string(outputDir) + "/output" + formatExtension(format);
     logInfo("Compiling timelapse: " + std::string(imageryDir));
     std::filesystem::create_directories(outputDir);
-    bool ok = makeTimelapse(std::string(imageryDir), outputFile, 24);
+    bool ok = makeTimelapse(std::string(imageryDir), outputFile, 24, format);
     if (!ok) {
         logError("Timelapse failed - keeping imagery: " + std::string(imageryDir));
         return false;
@@ -159,12 +159,16 @@ int main() {
             for (const auto& entry : std::filesystem::directory_iterator(comboDir)) {
                 if (!entry.is_directory()) continue;
                 std::filesystem::path imageryDir = entry.path() / "imagery";
-                std::filesystem::path videoFile  = entry.path() / "output" / "output.mkv";
+                std::filesystem::path outputDir = entry.path() / "output";
                 bool hasImages = false;
                 if (pathExists(imageryDir))
                     for (const auto& f : std::filesystem::directory_iterator(imageryDir))
                         if (f.is_regular_file()) { hasImages = true; break; }
-                if (hasImages && !std::filesystem::exists(videoFile))
+                bool hasVideo = false;
+                if (std::filesystem::exists(outputDir))
+                    for (const auto& f : std::filesystem::directory_iterator(outputDir))
+                        if (f.is_regular_file()) { hasVideo = true; break; }
+                if (hasImages && !hasVideo)
                     incomplete.push_back(entry.path().filename().string());
             }
             if (incomplete.empty()) continue;
@@ -217,8 +221,9 @@ int main() {
 
                 if (pathExists(prevImagery)) {
                     bool del = cfg.deleteAfterTimelapse;
-                    std::thread([prevImagery, prevOutput, del]() {
-                        compilePeriod(prevImagery, prevOutput, del);
+                    std::string fmt = cfg.format;
+                    std::thread([prevImagery, prevOutput, del, fmt]() {
+                        compilePeriod(prevImagery, prevOutput, del, fmt);
                     }).detach();
                 } else {
                     logWarn("No imagery for " + comboName + " [" + iv + "] " + key + " - skipping timelapse");

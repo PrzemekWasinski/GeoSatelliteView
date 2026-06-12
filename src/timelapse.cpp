@@ -7,7 +7,23 @@
 
 #include "../include/timelapse.h"
 
-bool makeTimelapse(const std::string& folderPath, const std::string& outputFile, int fps) {
+std::string formatExtension(const std::string& format) {
+    if (format == "AVI")  return ".avi";
+    if (format == "MKV")  return ".mkv";
+    if (format == "WEBM") return ".webm";
+    // MP4 and H264 both produce .mp4
+    return ".mp4";
+}
+
+static int formatFourcc(const std::string& format) {
+    if (format == "AVI")  return cv::VideoWriter::fourcc('M','J','P','G');
+    if (format == "MKV")  return cv::VideoWriter::fourcc('m','p','4','v');
+    if (format == "WEBM") return cv::VideoWriter::fourcc('V','P','8','0');
+    if (format == "H264") return cv::VideoWriter::fourcc('a','v','c','1');
+    return cv::VideoWriter::fourcc('m','p','4','v'); // MP4 default
+}
+
+bool makeTimelapse(const std::string& folderPath, const std::string& outputFile, int fps, const std::string& format) {
     std::vector<std::string> imageFiles;
 
     //collect image paths
@@ -51,7 +67,7 @@ bool makeTimelapse(const std::string& folderPath, const std::string& outputFile,
     }
 
     cv::VideoWriter writer(outputFile,
-                       cv::VideoWriter::fourcc('M','J','P','G'),
+                       formatFourcc(format),
                        fps,
                        frameSize);
 
