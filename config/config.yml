@@ -4,7 +4,7 @@
 #as the satellite configuration, the program will switch the satellite configuration after the longest timelapse
 #has been made (in this case it would be daily).
 Hourly: True
-Daily: False
+Daily: True
 Weekly: False
 Monthly: False
 
@@ -31,7 +31,7 @@ UseIncompleteImages: False
 #Path to the directory where the data folder will be created,
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
 #Use `.` to store images in the project dir.
-DataPath: ./
+DataPath: /mnt/ssd/GeoSatelliteView/
 
 #Output format for timelapse videos:
 #AVI   - Motion JPEG (.avi)  - universally compatible, large files

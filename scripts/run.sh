@@ -16,6 +16,7 @@ if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     exit 1
 fi
 
+cd "$PROJECT_ROOT" || exit 1
 nohup "$BINARY" > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 echo "Started (PID $!). Logs: $LOG_FILE"

@@ -46,6 +46,57 @@ static std::string longestEnabled(const Config& cfg) {
     return "hourly";
 }
 
+// Scans data/{satellite}/{interval}/{combo}/{period}/ and returns the SATELLITE_LIST
+// index of the combo whose most recent period folder has the latest timestamp name.
+// Returns -1 if the data directory is absent or no combo matches the list.
+static int detectLastSatIndex(const std::filesystem::path& dataDir,
+                               const std::vector<SatelliteConfig>& list) {
+    if (!std::filesystem::exists(dataDir)) return -1;
+
+    std::string bestPeriodKey;
+    std::string bestCombo;
+
+    try {
+        for (const auto& satEntry : std::filesystem::directory_iterator(dataDir)) {
+            if (!satEntry.is_directory()) continue;
+            for (const auto& ivEntry : std::filesystem::directory_iterator(satEntry)) {
+                if (!ivEntry.is_directory()) continue;
+                for (const auto& comboEntry : std::filesystem::directory_iterator(ivEntry)) {
+                    if (!comboEntry.is_directory()) continue;
+                    for (const auto& periodEntry : std::filesystem::directory_iterator(comboEntry)) {
+                        if (!periodEntry.is_directory()) continue;
+                        std::string key = periodEntry.path().filename().string();
+                        if (key > bestPeriodKey) {
+                            bestPeriodKey = key;
+                            bestCombo     = comboEntry.path().filename().string();
+                        }
+                    }
+                }
+            }
+        }
+    } catch (...) { return -1; }
+
+    if (bestCombo.empty()) return -1;
+
+    // Parse "SATELLITE-SECTOR-PRODUCT" (e.g. "GOES18-FD-GEOCOLOR")
+    auto first = bestCombo.find('-');
+    if (first == std::string::npos) return -1;
+    auto second = bestCombo.find('-', first + 1);
+    if (second == std::string::npos) return -1;
+
+    std::string satellite = bestCombo.substr(0, first);
+    std::string sector    = bestCombo.substr(first + 1, second - first - 1);
+    std::string product   = bestCombo.substr(second + 1);
+
+    for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+        if (list[i].satellite == satellite &&
+            list[i].sector    == sector    &&
+            list[i].product   == product)
+            return i;
+    }
+    return -1;
+}
+
 size_t write_to_buffer(void* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* buf = static_cast<std::vector<char>*>(userdata);
     buf->insert(buf->end(), static_cast<char*>(ptr), static_cast<char*>(ptr) + size * nmemb);
@@ -153,6 +204,9 @@ int main() {
     logInfo("Pull interval: " + std::to_string(cfg.pullIntervalMinutes) + " min");
     logInfo("Delete after timelapse: " + std::string(cfg.deleteAfterTimelapse ? "yes" : "no"));
 
+    const std::string longest = longestEnabled(cfg);
+    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
+
     // Initialise satellite
     int satIndex = 0;
     SatelliteConfig currentSat;
@@ -163,20 +217,26 @@ int main() {
             logInfo("Mode: Random - starting with "
                 + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
             break;
-        case SatelliteMode::SEQUENTIAL:
-            satIndex   = readSatelliteIndex(indexFile) % static_cast<int>(SATELLITE_LIST.size());
+        case SatelliteMode::SEQUENTIAL: {
+            if (std::ifstream(indexFile)) {
+                satIndex = readSatelliteIndex(indexFile) % static_cast<int>(SATELLITE_LIST.size());
+                logInfo("Mode: Sequential - resuming from saved index " + std::to_string(satIndex));
+            } else {
+                int detected = detectLastSatIndex(dataDir, SATELLITE_LIST);
+                if (detected >= 0) {
+                    satIndex = detected;
+                    logInfo("Mode: Sequential - detected last combo at index " + std::to_string(satIndex));
+                }
+            }
             currentSat = SATELLITE_LIST[satIndex];
-            logInfo("Mode: Sequential - resuming at index " + std::to_string(satIndex)
-                + " (" + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product + ")");
+            logInfo("Starting with " + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
             break;
+        }
         case SatelliteMode::FIXED:
             currentSat = cfg.fixedSatellite;
             logInfo("Mode: Fixed - " + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
             break;
     }
-
-    const std::string longest = longestEnabled(cfg);
-    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
 
     std::vector<std::string> activeIntervals;
     if (cfg.hourly)  activeIntervals.push_back("hourly");

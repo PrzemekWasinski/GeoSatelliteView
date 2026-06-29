@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <vector>
+#include <iostream>
 
 static std::string trim(const std::string& s) {
     size_t a = s.find_first_not_of(" \t\r\n");
@@ -19,6 +20,10 @@ static bool parseBool(const std::string& val) {
 Config readConfig(const std::string& path) {
     Config cfg;
     std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "ERROR: could not open config file: " << path << "\n";
+        return cfg;
+    }
     std::string line;
 
     while (std::getline(file, line)) {
