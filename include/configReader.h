@@ -21,6 +21,7 @@ struct Config {
     SatelliteConfig fixedSatellite;
     bool deleteAfterTimelapse = false;
     bool useOldImages = false;
+    double keepInterval = 0.0;
     std::string dataPath = ".";
     std::string format = "MP4";
 };

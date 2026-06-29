@@ -38,6 +38,7 @@ Config readConfig(const std::string& path) {
         else if (key == "Monthly")  cfg.monthly  = parseBool(val);
         else if (key == "Interval") cfg.pullIntervalMinutes = std::stoi(val);
         else if (key == "Delete")        cfg.deleteAfterTimelapse = parseBool(val);
+        else if (key == "KeepInterval")  cfg.keepInterval = std::stod(val);
         else if (key == "UseOldImages")  cfg.useOldImages = parseBool(val);
         else if (key == "DataPath")      cfg.dataPath = val;
         else if (key == "Format") {

@@ -11,6 +11,7 @@
 #include <random>
 #include <vector>
 #include <map>
+#include <set>
 #include <cstdio>
 #include <algorithm>
 
@@ -24,6 +25,18 @@ static SatelliteConfig pickRandom(const std::vector<SatelliteConfig>& list) {
     static std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<size_t> dist(0, list.size() - 1);
     return list[dist(rng)];
+}
+
+static std::time_t parseImageTime(const std::string& filename) {
+    std::tm tm{};
+    if (std::sscanf(filename.c_str(), "%4d%2d%2d_%2d%2d%2d",
+                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6)
+        return -1;
+    tm.tm_year -= 1900;
+    tm.tm_mon  -= 1;
+    tm.tm_isdst = -1;
+    return std::mktime(&tm);
 }
 
 static std::string longestEnabled(const Config& cfg) {
@@ -51,7 +64,14 @@ bool checkDiskSpace(const char* path = ".") {
     return availableGB >= 10;
 }
 
-bool compilePeriod(const std::filesystem::path& imageryDir, const std::filesystem::path& outputDir, bool deleteImages, const std::string& format) {
+bool compilePeriod(
+    const std::filesystem::path& imageryDir,
+    const std::filesystem::path& outputDir,
+    bool deleteImages,
+    const std::string& format,
+    double keepIntervalHours,
+    std::time_t periodStart
+) {
     std::string outputFile = std::string(outputDir) + "/output" + formatExtension(format);
     logInfo("Compiling timelapse: " + std::string(imageryDir));
     std::filesystem::create_directories(outputDir);
@@ -62,8 +82,44 @@ bool compilePeriod(const std::filesystem::path& imageryDir, const std::filesyste
     }
     logInfo("Timelapse done: " + outputFile);
     if (deleteImages) {
-        std::filesystem::remove_all(imageryDir);
-        logInfo("Deleted imagery: " + std::string(imageryDir));
+        if (keepIntervalHours <= 0.0) {
+            std::filesystem::remove_all(imageryDir);
+            logInfo("Deleted imagery: " + std::string(imageryDir));
+        } else {
+            long keepSecs = static_cast<long>(keepIntervalHours * 3600.0 + 0.5);
+
+            std::vector<std::filesystem::path> imageFiles;
+            for (const auto& entry : std::filesystem::directory_iterator(imageryDir)) {
+                if (!entry.is_regular_file()) continue;
+                std::string ext = entry.path().extension().string();
+                if (ext == ".jpg" || ext == ".jpeg" || ext == ".png")
+                    imageFiles.push_back(entry.path());
+            }
+            std::sort(imageFiles.begin(), imageFiles.end());
+
+            // For each N-hour slot keep the last (most recent) image in that slot.
+            std::map<long, std::filesystem::path> slotKeep;
+            for (const auto& p : imageFiles) {
+                std::time_t t = parseImageTime(p.filename().string());
+                if (t == -1) continue;
+                long offset = static_cast<long>(t - periodStart);
+                if (offset < 0) offset = 0;
+                slotKeep[offset / keepSecs] = p; // later images overwrite earlier ones in the same slot
+            }
+
+            std::set<std::filesystem::path> toKeep;
+            for (auto& [slot, p] : slotKeep) toKeep.insert(p);
+
+            int deleted = 0;
+            for (const auto& p : imageFiles) {
+                if (toKeep.find(p) == toKeep.end()) {
+                    std::filesystem::remove(p);
+                    ++deleted;
+                }
+            }
+            logInfo("Selective delete: kept " + std::to_string(toKeep.size())
+                    + ", deleted " + std::to_string(deleted) + " from " + std::string(imageryDir));
+        }
     }
     return true;
 }
@@ -222,8 +278,10 @@ int main() {
                 if (pathExists(prevImagery)) {
                     bool del = cfg.deleteAfterTimelapse;
                     std::string fmt = cfg.format;
-                    std::thread([prevImagery, prevOutput, del, fmt]() {
-                        compilePeriod(prevImagery, prevOutput, del, fmt);
+                    double ki = cfg.keepInterval;
+                    std::time_t ps = periodStart[iv];
+                    std::thread([prevImagery, prevOutput, del, fmt, ki, ps]() {
+                        compilePeriod(prevImagery, prevOutput, del, fmt, ki, ps);
                     }).detach();
                 } else {
                     logWarn("No imagery for " + comboName + " [" + iv + "] " + key + " - skipping timelapse");

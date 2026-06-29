@@ -14,11 +14,15 @@ Interval: 10
 #Choose a satellite configuration:
 #Random - picks a random configuration from config/satellites.h after each longest-interval timelapse
 #Sequential - steps through config/satellites.h in order after each longest-interval timelapse
-#[GOES18, PNW, AirMass] - always use a certain configuration 
+#[GOES18, PNW, AirMass] - always use a certain configuration (change the 3 values inside the brakcets)
 Satellite: Sequential
 
-#Delete images after creating timelapse?
+#Delete ALL images after creating timelapse? (will exclude images kept by KeepInterval on line 25)
 Delete: True
+
+#How often do you want images to be kept? If the value is 6 then during a 24h timelapse 1 image will be kept every 
+#6 hours. (This will still work even if Delete: True on line 21)
+KeepInterval: 6
 
 #Lets say you run this program at 2am and it stops at 5am. When you re-run it at 11am
 #do you want to keep using imagery from 2am-5am (True) or do you want to discard it and start over (False).
