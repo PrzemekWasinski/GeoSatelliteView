@@ -3,8 +3,8 @@
 #for 4pm-5pm and for 4pm-4pm (next day) so 2 timelapses. After this if you have selected `Sequential` or `Random`
 #as the satellite configuration, the program will switch the satellite configuration after the longest timelapse
 #has been made (in this case it would be daily).
-Hourly: False
-Daily: True
+Hourly: True
+Daily: False
 Weekly: False
 Monthly: False
 
@@ -27,7 +27,8 @@ UseIncompleteImages: False
 #Path to the directory where the data folder will be created,
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
 #Use `.` to store images in the project dir.
-DataPath: /mnt/ssd/GeoSatelliteView/
+DataPath: ./
+
 #Output format for timelapse videos:
 #AVI   - Motion JPEG (.avi)  - universally compatible, large files
 #MP4   - MPEG-4 (.mp4)       - widely supported, good compression
