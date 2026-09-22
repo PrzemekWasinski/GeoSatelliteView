@@ -1,0 +1,1 @@
+eumetsat,mtg_fd,overview,mtg_fd:rgb_geocolour,2026-09-22T13:30:00Z,https://view.eumetsat.int/geoserver/wms?service=WMS&version=1.3.0&request=GetMap&layers=mtg_fd%3Argb_geocolour&styles=&crs=CRS%3A84&bbox=-65%2C-65%2C65%2C65&width=1024&height=1024&format=image%2Fjpeg&time=2026-09-22T13%3A30%3A00Z,mtg_fd_overview_mtg_fd_rgb_geocolour.jpg,saved,,2026-09-22T14:02:33.977481+00:00

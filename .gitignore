@@ -1,6 +1,7 @@
 data/*
 build/*
-test/*
+satellite_test/images
+__pycache__
 
 temp/
 

@@ -47,6 +47,18 @@ ENTRY = re.compile(
     r'\{\s*"Sector"\s*,\s*"([A-Za-z0-9]+)"\s*\}\s*,\s*'
     r'\{\s*"Product"\s*,\s*"([A-Za-z0-9]+)"\s*\}'
 )
+# Fixed NOAA STAR ABI views. Meso locations move, so they are not listed here.
+GOES_SECTORS = {
+    "GOES18": (
+        "PNW", "PSW", "WUS", "AK", "CAK", "SEA", "NP", "HI", "TPW", "TSP", "EEP",
+    ),
+    "GOES19": (
+        "NR", "UMV", "CGL", "NE", "SR", "SP", "SMV", "SE", "EUS", "CAN",
+        "NA", "CAR", "GA", "PR", "TAW", "EEP", "MEX", "CAM", "NSA", "SSA",
+    ),
+}
+GOES_CONUS_PRODUCTS = ("GEOCOLOR", "AirMass", "Dust", "DayNightCloudMicroCombo",
+                       "FireTemperature", "Sandwich", *(f"{band:02d}" for band in range(1, 17)))
 
 
 def read_config(path):
@@ -57,9 +69,24 @@ def read_config(path):
     return list(dict.fromkeys(entries))
 
 
+def goes_test_configs(path):
+    configs = read_config(path)
+    for satellite, sectors in GOES_SECTORS.items():
+        # Existing regional entries supply the product set for each satellite.
+        reference_sector = "AK" if satellite == "GOES18" else "PR"
+        products = [product for sat, sector, product in configs
+                    if (sat, sector) == (satellite, reference_sector)]
+        for sector in sectors:
+            configs.extend((satellite, sector, product) for product in products)
+        configs.extend((satellite, "CONUS", product) for product in GOES_CONUS_PRODUCTS)
+    return list(dict.fromkeys(configs))
+
+
 def image_url(satellite, sector, product):
     if sector == "FD":
         return f"{BASE_URL}/{satellite}/ABI/FD/{product}/1808x1808.jpg"
+    if sector == "CONUS":
+        return f"{BASE_URL}/{satellite}/ABI/CONUS/{product}/1250x750.jpg"
     return f"{BASE_URL}/{satellite}/ABI/SECTOR/{sector.lower()}/{product}/latest.jpg"
 
 
@@ -217,7 +244,7 @@ def main():
         print(f"Preparing {provider}: {output.resolve()}", flush=True)
         try:
             if provider == "goes":
-                configs = read_config(args.config)
+                configs = goes_test_configs(args.config)
                 if args.limit:
                     configs = configs[:args.limit]
                 entries = [job(provider, *entry, image_url(*entry)) for entry in configs]
