@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 import xml.etree.ElementTree as ET
 
+from PIL import Image
+
 
 HERE = Path(__file__).resolve().parent
 BASE_URL = "https://cdn.star.nesdis.noaa.gov"
@@ -59,6 +61,7 @@ GOES_SECTORS = {
 }
 GOES_CONUS_PRODUCTS = ("GEOCOLOR", "AirMass", "Dust", "DayNightCloudMicroCombo",
                        "FireTemperature", "Sandwich", *(f"{band:02d}" for band in range(1, 17)))
+GOES_IMAGE_SIZE = (500, 500)
 
 
 def read_config(path):
@@ -101,6 +104,14 @@ def fetch_bytes(url, timeout, data=None, headers=None):
         "User-Agent": "GeoSatelliteView-satellite-test/2.0", **(headers or {})})
     with urlopen(request, timeout=timeout) as response:
         return response.read()
+
+
+def resize_goes_image(path):
+    resampling = getattr(Image, "Resampling", Image)
+    with Image.open(path) as source:
+        source.load()
+        resized = source.convert("RGB").resize(GOES_IMAGE_SIZE, resampling.LANCZOS)
+    resized.save(path, format="JPEG", quality=85, optimize=True)
 
 
 @lru_cache(maxsize=4)
@@ -196,6 +207,8 @@ def download(entry, output, timeout):
                     image.write(start)
                     while chunk := response.read(64 * 1024):
                         image.write(chunk)
+            if entry["provider"] == "goes":
+                resize_goes_image(temporary)
             temporary.replace(destination)
             row["status"] = "saved"
             row["error"] = ""
@@ -227,7 +240,8 @@ def main():
     parser.add_argument("--timeout", type=positive_int, default=60, help="socket timeout in seconds")
     parser.add_argument("--providers", nargs="+", choices=PROVIDERS, default=list(PROVIDERS))
     parser.add_argument("--limit", type=positive_int, help="first N images PER provider")
-    parser.add_argument("--size", type=positive_int, default=1024, help="new API image width (max 2500); GOES unchanged")
+    parser.add_argument("--size", type=positive_int, default=1024,
+                        help="new API image width (max 2500); GOES is always saved at 500x500")
     parser.add_argument("--date", type=date.fromisoformat, help="YYYY-MM-DD for GIBS daily imagery and Sentinel search end")
     parser.add_argument("--bbox", type=float, nargs=4, default=[-0.5, 51.3, 0.3, 51.8],
                         metavar=("WEST", "SOUTH", "EAST", "NORTH"), help="Sentinel region; defaults to London")
