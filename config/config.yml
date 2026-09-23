@@ -1,21 +1,23 @@
-#How often do you want images to be compiled (Can select multiple):
-#If you select multiple (for example hourly and daily) and the progam starts at 4pm, a timelapse will be made
-#for 4pm-5pm and for 4pm-4pm (next day) so 2 timelapses. After this if you have selected `Sequential` or `Random`
-#as the satellite configuration, the program will switch the satellite configuration after the longest timelapse
-#has been made (in this case it would be daily).
+#How often do you want images compiled (you can select multiple):
+#Every configured satellite source gets its own timelapse for every enabled period.
+#For example, with 10 sources and Hourly plus Daily enabled, each hour produces
+#10 hourly videos and each day produces another 10 daily videos.
 Hourly: True
 Daily: True
 Weekly: False
 Monthly: False
 
 #How often do you want images to be pulled (Minutes):
+#Every entry in config/satellites.h is pulled once per interval. Downloads are
+#evenly staggered across the interval instead of all starting at the same time.
 Interval: 10
 
-#Choose a satellite configuration:
-#Random - picks a random configuration from config/satellites.h after each longest-interval timelapse
-#Sequential - steps through config/satellites.h in order after each longest-interval timelapse
-#[GOES18, PNW, AirMass] - always use a certain configuration (change the 3 values inside the brakcets)
-Satellite: Sequential
+#Maximum number of timelapses encoded simultaneously. Three is recommended for
+#a Raspberry Pi 4; additional videos wait in a queue.
+EncoderWorkers: 3
+
+#Stop collecting before the data disk has less than this much free space.
+MinimumDiskGB: 10
 
 #Delete ALL images after creating timelapse? (will exclude images kept by KeepInterval on line 25)
 Delete: True

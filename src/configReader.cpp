@@ -42,9 +42,12 @@ Config readConfig(const std::string& path) {
         else if (key == "Weekly")   cfg.weekly   = parseBool(val);
         else if (key == "Monthly")  cfg.monthly  = parseBool(val);
         else if (key == "Interval") cfg.pullIntervalMinutes = std::stoi(val);
+        else if (key == "EncoderWorkers") cfg.encoderWorkers = std::max(1, std::stoi(val));
+        else if (key == "MinimumDiskGB") cfg.minimumDiskGB = std::max(1, std::stoi(val));
         else if (key == "Delete")        cfg.deleteAfterTimelapse = parseBool(val);
         else if (key == "KeepInterval")  cfg.keepInterval = std::stod(val);
-        else if (key == "UseOldImages")  cfg.useOldImages = parseBool(val);
+        else if (key == "UseIncompleteImages" || key == "UseOldImages")
+            cfg.useOldImages = parseBool(val);
         else if (key == "DataPath")      cfg.dataPath = val;
         else if (key == "Format") {
             std::transform(val.begin(), val.end(), val.begin(), ::toupper);

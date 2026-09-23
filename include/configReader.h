@@ -4,9 +4,9 @@
 #include <string>
 
 struct SatelliteConfig {
-    std::string satellite; // "GOES16", "GOES18", "GOES19"
-    std::string sector;    // "FD", "AK", etc.
-    std::string product;   // "GEOCOLOR", "AirMass", "01", etc.
+    std::string satellite; // GOES18, GOES19, Himawari, or EUMETSAT
+    std::string sector;    // FD, CAK, REGION, MTG_FD, etc.
+    std::string product;   // Provider product or band identifier
 };
 
 enum class SatelliteMode { FIXED, RANDOM, SEQUENTIAL };
@@ -17,6 +17,8 @@ struct Config {
     bool weekly  = false;
     bool monthly = false;
     int  pullIntervalMinutes = 10;
+    int  encoderWorkers = 3;
+    int  minimumDiskGB = 10;
     SatelliteMode satelliteMode = SatelliteMode::RANDOM;
     SatelliteConfig fixedSatellite;
     bool deleteAfterTimelapse = false;

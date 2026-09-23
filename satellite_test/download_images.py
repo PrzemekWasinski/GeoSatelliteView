@@ -45,9 +45,9 @@ WMS_SOURCES = {
 FIELDS = ["provider", "satellite", "sector", "product", "requested_time", "url",
           "filename", "status", "error", "downloaded_at_utc"]
 ENTRY = re.compile(
-    r'\{\s*"Satellite"\s*,\s*"([A-Za-z0-9]+)"\s*\}\s*,\s*'
-    r'\{\s*"Sector"\s*,\s*"([A-Za-z0-9]+)"\s*\}\s*,\s*'
-    r'\{\s*"Product"\s*,\s*"([A-Za-z0-9]+)"\s*\}'
+    r'\{\s*"Satellite"\s*,\s*"([A-Za-z0-9_]+)"\s*\}\s*,\s*'
+    r'\{\s*"Sector"\s*,\s*"([A-Za-z0-9_]+)"\s*\}\s*,\s*'
+    r'\{\s*"Product"\s*,\s*"([A-Za-z0-9_]+)"\s*\}'
 )
 # Fixed NOAA STAR ABI views. Meso locations move, so they are not listed here.
 GOES_SECTORS = {
@@ -73,7 +73,8 @@ def read_config(path):
 
 
 def goes_test_configs(path):
-    configs = read_config(path)
+    # The production configuration may also contain non-GOES providers.
+    configs = [entry for entry in read_config(path) if entry[0].startswith("GOES")]
     for satellite, sectors in GOES_SECTORS.items():
         # Existing regional entries supply the product set for each satellite.
         reference_sector = "AK" if satellite == "GOES18" else "PR"

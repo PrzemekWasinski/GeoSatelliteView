@@ -1,8 +1,8 @@
 # Geostationary Satellite View
 
-Geostationary Satellite View is a program that automatically collects satellite imagery from geostationary satellites such as the NOAA series GOES 16, 18 and 19. After receiving a certain amount of images, set by the user in `config/config.yml`, the program will compile all images into a hourly, daily, weekly or monthly timelapse.
+Geostationary Satellite View automatically collects imagery from the configured GOES, Himawari and EUMETSAT sources. It compiles a separate hourly, daily, weekly or monthly timelapse for every configured source.
 
-Different satellites, sectors, products and radio bands can be chosen from `config/satellites.cpp` which contain different data such as Fire Temperatures, Air Mass, Dust Levels and lots more. The config file also allows you to set custom image download intervals and timelapse times. 
+Different satellites, sectors, products and spectral bands are selected in `config/satellites.h`. Every source is downloaded once per configured interval, with requests evenly staggered across that interval. The config file also controls the download interval, timelapse periods and number of concurrent video encoders.
 
 ## Output Example: 
 
@@ -21,4 +21,3 @@ This program is made to be ran and left, to automatically gather and compile sat
     Build system:       CMake
     Scripting:          Python,  Bash
     Image compilation:  OpenCV
-

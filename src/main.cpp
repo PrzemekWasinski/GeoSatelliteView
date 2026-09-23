@@ -14,6 +14,10 @@
 #include <set>
 #include <cstdio>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
 
 #include "../include/timelapse.h"
 #include "../include/fileFunctions.h"
@@ -44,6 +48,34 @@ static std::string longestEnabled(const Config& cfg) {
     if (cfg.weekly)  return "weekly";
     if (cfg.daily)   return "daily";
     return "hourly";
+}
+
+static std::string imageUrl(const SatelliteConfig& config) {
+    if (config.satellite.rfind("GOES", 0) == 0) {
+        std::string satNum = config.satellite.substr(4);
+        if (config.sector == "FD")
+            return "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/FD/"
+                 + config.product + "/1808x1808.jpg";
+        return "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/SECTOR/"
+             + config.sector + "/" + config.product + "/latest.jpg";
+    }
+
+    if (config.satellite == "Himawari") {
+        return "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?"
+               "service=WMS&version=1.3.0&request=GetMap&layers=" + config.product +
+               "&styles=&crs=CRS%3A84&bbox=80%2C-60%2C180%2C60&width=1024&height=1229"
+               "&format=image%2Fjpeg";
+    }
+
+    if (config.satellite == "EUMETSAT") {
+        std::string layer = config.sector == "MSG_FES" ? "msg_fes" : "mtg_fd";
+        return "https://view.eumetsat.int/geoserver/wms?service=WMS&version=1.3.0"
+               "&request=GetMap&layers=" + layer + "%3A" + config.product +
+               "&styles=&crs=CRS%3A84&bbox=-65%2C-65%2C65%2C65&width=1024&height=1024"
+               "&format=image%2Fjpeg";
+    }
+
+    return {};
 }
 
 // Scans data/{satellite}/{interval}/{combo}/{period}/ and returns the SATELLITE_LIST
@@ -103,7 +135,7 @@ size_t write_to_buffer(void* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
-bool checkDiskSpace(const char* path = ".") {
+bool checkDiskSpace(const char* path = ".", int minimumGB = 10) {
     struct statvfs stat;
     if (statvfs(path, &stat) != 0) {
         logError("Failed to read disk stats");
@@ -112,7 +144,7 @@ bool checkDiskSpace(const char* path = ".") {
     unsigned long long available = (unsigned long long)stat.f_bavail * (unsigned long long)stat.f_frsize;
     unsigned long long availableGB = available / (1024ULL * 1024ULL * 1024ULL);
     logInfo("Disk space available: " + std::to_string(availableGB) + " GB");
-    return availableGB >= 10;
+    return availableGB >= static_cast<unsigned long long>(minimumGB);
 }
 
 bool compilePeriod(
@@ -175,67 +207,92 @@ bool compilePeriod(
     return true;
 }
 
+class EncodingQueue {
+public:
+    explicit EncodingQueue(size_t workerCount) {
+        workerCount = std::max<size_t>(1, workerCount);
+        for (size_t i = 0; i < workerCount; ++i) {
+            workers.emplace_back([this]() {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        ready.wait(lock, [this]() { return stopping || !tasks.empty(); });
+                        if (stopping && tasks.empty()) return;
+                        task = std::move(tasks.front());
+                        tasks.pop_front();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+
+    ~EncodingQueue() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stopping = true;
+        }
+        ready.notify_all();
+        for (auto& worker : workers)
+            if (worker.joinable()) worker.join();
+    }
+
+    void enqueue(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            tasks.push_back(std::move(task));
+        }
+        ready.notify_one();
+    }
+
+private:
+    std::vector<std::thread> workers;
+    std::deque<std::function<void()>> tasks;
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool stopping = false;
+};
+
+struct SourceState {
+    SatelliteConfig config;
+    std::map<std::string, std::time_t> periodStart;
+    std::chrono::steady_clock::time_point nextFetch;
+};
+
+static std::string comboName(const SatelliteConfig& config) {
+    return config.satellite + "-" + config.sector + "-" + config.product;
+}
+
+static bool directoryHasImages(const std::filesystem::path& directory) {
+    if (!pathExists(directory)) return false;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (!entry.is_regular_file()) continue;
+        std::string ext = entry.path().extension().string();
+        if (ext == ".jpg" || ext == ".jpeg" || ext == ".png") return true;
+    }
+    return false;
+}
+
 int main() {
     initLogger("./geosatelliteview.log");
-    std::time_t startTime = std::time(nullptr);
+    const std::time_t startTime = std::time(nullptr);
     char startBuf[32];
     strftime(startBuf, sizeof(startBuf), "%d-%m-%Y %H:%M:%S", std::localtime(&startTime));
     logInfo("----- GeoSatelliteView Started at: " + std::string(startBuf) + " -----");
 
     Config cfg = readConfig("./config/config.yml");
-    const std::string indexFile = "./config/satellite_index.txt";
-
     if (!cfg.hourly && !cfg.daily && !cfg.weekly && !cfg.monthly) {
         logError("No timelapse interval enabled in config.yml - exiting");
         return 1;
     }
-
-    if (cfg.satelliteMode != SatelliteMode::FIXED && SATELLITE_LIST.empty()) {
-        logError("Satellite list is empty - run tests/parse_log.py first");
+    if (SATELLITE_LIST.empty()) {
+        logError("Satellite list is empty");
         return 1;
     }
-
-    // Log active config
-    logInfo("Intervals: "
-        + std::string(cfg.hourly  ? "hourly "  : "")
-        + std::string(cfg.daily   ? "daily "   : "")
-        + std::string(cfg.weekly  ? "weekly "  : "")
-        + std::string(cfg.monthly ? "monthly"  : ""));
-    logInfo("Pull interval: " + std::to_string(cfg.pullIntervalMinutes) + " min");
-    logInfo("Delete after timelapse: " + std::string(cfg.deleteAfterTimelapse ? "yes" : "no"));
-
-    const std::string longest = longestEnabled(cfg);
-    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
-
-    // Initialise satellite
-    int satIndex = 0;
-    SatelliteConfig currentSat;
-
-    switch (cfg.satelliteMode) {
-        case SatelliteMode::RANDOM:
-            currentSat = pickRandom(SATELLITE_LIST);
-            logInfo("Mode: Random - starting with "
-                + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
-            break;
-        case SatelliteMode::SEQUENTIAL: {
-            if (std::ifstream(indexFile)) {
-                satIndex = readSatelliteIndex(indexFile) % static_cast<int>(SATELLITE_LIST.size());
-                logInfo("Mode: Sequential - resuming from saved index " + std::to_string(satIndex));
-            } else {
-                int detected = detectLastSatIndex(dataDir, SATELLITE_LIST);
-                if (detected >= 0) {
-                    satIndex = detected;
-                    logInfo("Mode: Sequential - detected last combo at index " + std::to_string(satIndex));
-                }
-            }
-            currentSat = SATELLITE_LIST[satIndex];
-            logInfo("Starting with " + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
-            break;
-        }
-        case SatelliteMode::FIXED:
-            currentSat = cfg.fixedSatellite;
-            logInfo("Mode: Fixed - " + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
-            break;
+    if (cfg.pullIntervalMinutes < 1) {
+        logError("Interval must be at least one minute");
+        return 1;
     }
 
     std::vector<std::string> activeIntervals;
@@ -244,207 +301,197 @@ int main() {
     if (cfg.weekly)  activeIntervals.push_back("weekly");
     if (cfg.monthly) activeIntervals.push_back("monthly");
 
-    // Period length per interval (seconds), anchored to program start - not the calendar.
-    auto intervalLength = [](const std::string& iv) -> std::time_t {
-        if (iv == "hourly") return 3600;
-        if (iv == "daily")  return 86400;
-        if (iv == "weekly") return 7 * 86400;
-        return 30 * 86400; // monthly (fixed 30 days)
+    auto intervalLength = [](const std::string& interval) -> std::time_t {
+        if (interval == "hourly") return 3600;
+        if (interval == "daily")  return 86400;
+        if (interval == "weekly") return 7 * 86400;
+        return 30 * 86400;
     };
-    // ISO-ordered key so a period folder name sorts chronologically and is stable across midnight.
-    auto periodKey = [](std::time_t t) {
-        std::tm tm = *std::localtime(&t);
-        char buf[24];
-        strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
-        return std::string(buf);
+    auto periodKey = [](std::time_t value) {
+        std::tm tm = *std::localtime(&value);
+        char buffer[24];
+        strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
+        return std::string(buffer);
     };
 
-    // Each active interval runs its own period; all start at program start unless resumed below.
-    std::map<std::string, std::time_t> periodStart;
-    for (const auto& iv : activeIntervals) periodStart[iv] = startTime;
+    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
+    std::filesystem::create_directories(dataDir);
 
-    // Handle imagery left over from a previous (incomplete) run of the current combo.
-    {
-        std::string initCombo = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
-        for (const auto& iv : activeIntervals) {
-            std::filesystem::path comboDir = dataDir / currentSat.satellite / iv / initCombo;
+    const auto cycle = std::chrono::seconds(cfg.pullIntervalMinutes * 60);
+    const auto spacing = std::chrono::seconds(
+        std::max<long long>(1, cycle.count() / static_cast<long long>(SATELLITE_LIST.size())));
+    const auto scheduleStart = std::chrono::steady_clock::now();
+
+    std::vector<SourceState> sources;
+    sources.reserve(SATELLITE_LIST.size());
+    for (size_t i = 0; i < SATELLITE_LIST.size(); ++i) {
+        SourceState state;
+        state.config = SATELLITE_LIST[i];
+        state.nextFetch = scheduleStart + spacing * static_cast<long long>(i + 1);
+        for (const auto& interval : activeIntervals) state.periodStart[interval] = startTime;
+        sources.push_back(std::move(state));
+        logInfo("Scheduled " + comboName(SATELLITE_LIST[i]) + " at +"
+                + std::to_string(spacing.count() * static_cast<long long>(i + 1))
+                + " seconds, then every " + std::to_string(cfg.pullIntervalMinutes) + " minutes");
+    }
+
+    logInfo("Active sources: " + std::to_string(sources.size()));
+    logInfo("Encoder workers: " + std::to_string(cfg.encoderWorkers));
+    logInfo("Delete after timelapse: " + std::string(cfg.deleteAfterTimelapse ? "yes" : "no"));
+    EncodingQueue encoders(static_cast<size_t>(cfg.encoderWorkers));
+
+    // Resume or clear unfinished periods independently for every source.
+    for (auto& source : sources) {
+        const std::string name = comboName(source.config);
+        for (const auto& interval : activeIntervals) {
+            std::filesystem::path comboDir = dataDir / source.config.satellite / interval / name;
             if (!pathExists(comboDir)) continue;
 
-            // Period folders that hold imagery but were never compiled into a video.
             std::vector<std::string> incomplete;
             for (const auto& entry : std::filesystem::directory_iterator(comboDir)) {
                 if (!entry.is_directory()) continue;
-                std::filesystem::path imageryDir = entry.path() / "imagery";
-                std::filesystem::path outputDir = entry.path() / "output";
-                bool hasImages = false;
-                if (pathExists(imageryDir))
-                    for (const auto& f : std::filesystem::directory_iterator(imageryDir))
-                        if (f.is_regular_file()) { hasImages = true; break; }
+                const auto imageryDir = entry.path() / "imagery";
+                const auto outputDir = entry.path() / "output";
                 bool hasVideo = false;
-                if (std::filesystem::exists(outputDir))
-                    for (const auto& f : std::filesystem::directory_iterator(outputDir))
-                        if (f.is_regular_file()) { hasVideo = true; break; }
-                if (hasImages && !hasVideo)
+                if (pathExists(outputDir)) {
+                    for (const auto& file : std::filesystem::directory_iterator(outputDir)) {
+                        if (file.is_regular_file()) { hasVideo = true; break; }
+                    }
+                }
+                if (directoryHasImages(imageryDir) && !hasVideo)
                     incomplete.push_back(entry.path().filename().string());
             }
-            if (incomplete.empty()) continue;
             std::sort(incomplete.begin(), incomplete.end());
+            if (incomplete.empty()) continue;
 
             if (cfg.useOldImages) {
-                // Resume the most recent unfinished period; keep its original schedule.
                 const std::string& latest = incomplete.back();
                 std::tm tm{};
                 if (std::sscanf(latest.c_str(), "%4d%2d%2d_%2d%2d%2d",
                                 &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
                                 &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
                     tm.tm_year -= 1900;
-                    tm.tm_mon  -= 1;
+                    tm.tm_mon -= 1;
                     tm.tm_isdst = -1;
-                    periodStart[iv] = std::mktime(&tm);
-                    logInfo("Resuming incomplete period [" + iv + "]: " + latest);
+                    source.periodStart[interval] = std::mktime(&tm);
+                    logInfo("Resuming " + name + " [" + interval + "] " + latest);
                 }
-                for (size_t i = 0; i + 1 < incomplete.size(); ++i) {
+                for (size_t i = 0; i + 1 < incomplete.size(); ++i)
                     std::filesystem::remove_all(comboDir / incomplete[i]);
-                    logInfo("Cleared older incomplete period [" + iv + "]: " + incomplete[i]);
-                }
             } else {
-                for (const auto& key : incomplete) {
+                for (const auto& key : incomplete)
                     std::filesystem::remove_all(comboDir / key);
-                    logInfo("Cleared incomplete period [" + iv + "]: " + key);
-                }
             }
         }
     }
 
-    bool firstRun = true;
-    auto lastImageFetch = std::chrono::steady_clock::now();
+    bool running = true;
+    while (running) {
+        const std::time_t now = std::time(nullptr);
+        const auto steadyNow = std::chrono::steady_clock::now();
 
-    while (true) {
-        std::time_t now = std::time(nullptr);
-        std::string comboName = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
+        // Close every elapsed period for every source and queue one video per source.
+        for (auto& source : sources) {
+            const std::string name = comboName(source.config);
+            for (const auto& interval : activeIntervals) {
+                const std::time_t length = intervalLength(interval);
+                while (now - source.periodStart[interval] >= length) {
+                    const std::time_t endedPeriod = source.periodStart[interval];
+                    const std::string key = periodKey(endedPeriod);
+                    const auto periodDir = dataDir / source.config.satellite / interval / name / key;
+                    const auto imageryDir = periodDir / "imagery";
+                    const auto outputDir = periodDir / "output";
 
-        // --- Period rollovers (anchored to program start) ---
-        bool longestRolled = false;
-        for (const auto& iv : activeIntervals) {
-            std::time_t length = intervalLength(iv);
-            while (now - periodStart[iv] >= length) {
-                std::string key = periodKey(periodStart[iv]);
-                std::filesystem::path periodDir = dataDir / currentSat.satellite / iv / comboName / key;
-                std::filesystem::path prevImagery = periodDir / "imagery";
-                std::filesystem::path prevOutput  = periodDir / "output";
-
-                logInfo(iv + " period ended for " + comboName + " (" + key + ")");
-
-                if (pathExists(prevImagery)) {
-                    bool del = cfg.deleteAfterTimelapse;
-                    std::string fmt = cfg.format;
-                    double ki = cfg.keepInterval;
-                    std::time_t ps = periodStart[iv];
-                    std::thread([prevImagery, prevOutput, del, fmt, ki, ps]() {
-                        compilePeriod(prevImagery, prevOutput, del, fmt, ki, ps);
-                    }).detach();
-                } else {
-                    logWarn("No imagery for " + comboName + " [" + iv + "] " + key + " - skipping timelapse");
+                    if (directoryHasImages(imageryDir)) {
+                        logInfo("Queueing " + interval + " timelapse for " + name + " (" + key + ")");
+                        const bool removeImages = cfg.deleteAfterTimelapse;
+                        const std::string format = cfg.format;
+                        const double keepInterval = cfg.keepInterval;
+                        encoders.enqueue([imageryDir, outputDir, removeImages, format,
+                                          keepInterval, endedPeriod]() {
+                            compilePeriod(imageryDir, outputDir, removeImages, format,
+                                          keepInterval, endedPeriod);
+                        });
+                    } else {
+                        logWarn("No imagery for " + name + " [" + interval + "] " + key);
+                    }
+                    source.periodStart[interval] += length;
                 }
-
-                periodStart[iv] += length;
-                if (iv == longest) longestRolled = true;
+                createRunDirectories(dataDir, source.config.satellite, interval, name,
+                                     periodKey(source.periodStart[interval]));
             }
         }
 
-        // Switch satellite only after the longest period has fully completed.
-        if (longestRolled) {
-            if (cfg.satelliteMode == SatelliteMode::RANDOM) {
-                currentSat = pickRandom(SATELLITE_LIST);
-                logInfo("Random switch -> "
-                    + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
-            } else if (cfg.satelliteMode == SatelliteMode::SEQUENTIAL) {
-                satIndex   = (satIndex + 1) % static_cast<int>(SATELLITE_LIST.size());
-                currentSat = SATELLITE_LIST[satIndex];
-                writeSatelliteIndex(indexFile, satIndex);
-                logInfo("Sequential switch [" + std::to_string(satIndex) + "] -> "
-                    + currentSat.satellite + " " + currentSat.sector + " " + currentSat.product);
+        // Normally one source becomes due per spacing slot (one minute with 10 sources/10 minutes).
+        for (auto& source : sources) {
+            if (steadyNow < source.nextFetch) continue;
+
+            const std::string name = comboName(source.config);
+            const std::string url = imageUrl(source.config);
+            if (url.empty()) {
+                logError("Unsupported satellite provider: " + source.config.satellite);
+                running = false;
+                break;
             }
-            comboName = currentSat.satellite + "-" + currentSat.sector + "-" + currentSat.product;
-        }
-
-        // --- Build the download URL for the (possibly new) current combo ---
-        // Full Disk numbered bands have no latest.jpg, so use the fixed 1808x1808 file for all FD
-        // products; sectors only reliably expose latest.jpg.
-        std::string satNum   = currentSat.satellite.substr(4);
-        std::string imageUrl = currentSat.sector == "FD"
-            ? "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/FD/"
-                  + currentSat.product + "/1808x1808.jpg"
-            : "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/SECTOR/"
-                  + currentSat.sector + "/" + currentSat.product + "/latest.jpg";
-
-        for (const auto& iv : activeIntervals)
-            createRunDirectories(dataDir, currentSat.satellite, iv, comboName, periodKey(periodStart[iv]));
-
-        auto currentTimestamp = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTimestamp - lastImageFetch);
-
-        if (elapsed.count() >= cfg.pullIntervalMinutes || firstRun) {
-            if (!checkDiskSpace(dataDir.c_str())) {
-                logError("Less than 10 GB remaining on data path - stopping");
+            if (!checkDiskSpace(dataDir.c_str(), cfg.minimumDiskGB)) {
+                logError("Less than " + std::to_string(cfg.minimumDiskGB)
+                         + " GB remaining on data path - stopping");
+                running = false;
                 break;
             }
 
             CURL* curl = curl_easy_init();
             if (!curl) {
                 logError("Failed to initialise curl");
-                return 1;
+                running = false;
+                break;
             }
-
-            std::vector<char> imgBuffer;
-            curl_easy_setopt(curl, CURLOPT_URL, imageUrl.c_str());
+            std::vector<char> imageBuffer;
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_buffer);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &imgBuffer);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &imageBuffer);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            // Without these, a stalled connection (common on Wi-Fi) blocks
-            // curl_easy_perform forever and freezes the whole single-threaded loop.
-            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L); // max time to establish connection
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);       // max time for the whole transfer
-            // Abort if transfer drops below 100 B/s for 30s (catches mid-download stalls).
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
-            curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);        // timeouts must not rely on signals
+            curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-            CURLcode res = curl_easy_perform(curl);
+            const CURLcode result = curl_easy_perform(curl);
             long httpCode = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
             curl_easy_cleanup(curl);
 
-            // Only accept a genuine JPEG (HTTP 200 + JPEG magic bytes); never store error pages.
-            bool validJpeg = imgBuffer.size() > 3 &&
-                             static_cast<unsigned char>(imgBuffer[0]) == 0xFF &&
-                             static_cast<unsigned char>(imgBuffer[1]) == 0xD8 &&
-                             static_cast<unsigned char>(imgBuffer[2]) == 0xFF;
+            const bool validJpeg = imageBuffer.size() > 3
+                && static_cast<unsigned char>(imageBuffer[0]) == 0xFF
+                && static_cast<unsigned char>(imageBuffer[1]) == 0xD8
+                && static_cast<unsigned char>(imageBuffer[2]) == 0xFF;
 
-            if (res != CURLE_OK) {
-                logError("Curl failed for " + comboName + ": " + curl_easy_strerror(res));
+            if (result != CURLE_OK) {
+                logError("Curl failed for " + name + ": " + curl_easy_strerror(result));
             } else if (httpCode != 200) {
-                logWarn("HTTP " + std::to_string(httpCode) + " for " + comboName
-                        + " (" + imageUrl + ") - skipping");
+                logWarn("HTTP " + std::to_string(httpCode) + " for " + name + " (" + url + ")");
             } else if (!validJpeg) {
-                logWarn("Non-JPEG response for " + comboName + " ("
-                        + std::to_string(imgBuffer.size()) + " bytes) - skipping");
+                logWarn("Non-JPEG response for " + name + " ("
+                        + std::to_string(imageBuffer.size()) + " bytes)");
             } else {
-                std::string filename = periodKey(now) + ".jpg"; // capture time, chronologically sortable
-                for (const auto& iv : activeIntervals) {
-                    std::filesystem::path imagePath = dataDir / currentSat.satellite / iv
-                                                    / comboName / periodKey(periodStart[iv]) / "imagery" / filename;
+                const std::time_t capturedAt = std::time(nullptr);
+                const std::string filename = periodKey(capturedAt) + ".jpg";
+                for (const auto& interval : activeIntervals) {
+                    const auto imagePath = dataDir / source.config.satellite / interval / name
+                        / periodKey(source.periodStart[interval]) / "imagery" / filename;
                     std::ofstream file(imagePath, std::ios::binary);
-                    file.write(imgBuffer.data(), imgBuffer.size());
+                    file.write(imageBuffer.data(), static_cast<std::streamsize>(imageBuffer.size()));
                 }
-                logInfo("Saved " + comboName + " " + filename);
+                logInfo("Saved " + name + " " + filename);
             }
 
-            lastImageFetch = currentTimestamp;
-            firstRun = false;
+            // Keep this source on its original cadence instead of drifting after slow downloads.
+            do { source.nextFetch += cycle; }
+            while (source.nextFetch <= std::chrono::steady_clock::now());
         }
 
-        std::this_thread::sleep_for(std::chrono::seconds(30));
+        std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 
     logInfo("=== GeoSatelliteView stopped ===");
