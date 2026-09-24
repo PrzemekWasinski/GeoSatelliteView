@@ -32,8 +32,8 @@ UseIncompleteImages: False
 
 #Path to the directory where the data folder will be created,
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
-#Use `.` to store images in the project dir.
-DataPath: /mnt/ssd/GeoSatelliteView/
+#Use `.` to store images in the project dir. A path ending in `data` is used directly.
+DataPath: /home/przemek/Programming/GeoSatelliteView/data
 
 #Output format for timelapse videos:
 #AVI   - Motion JPEG (.avi)  - universally compatible, large files

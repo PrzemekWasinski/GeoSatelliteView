@@ -1,4 +1,6 @@
 #include <curl/curl.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <fstream>
 #include <iostream>
 #include <ctime>
@@ -24,6 +26,16 @@
 #include "../include/configReader.h"
 #include "../include/logger.h"
 #include "../config/satellites.h"
+
+// Resize and encode once so every enabled interval saves identical JPEG bytes.
+static bool resizeDownloadedImage(const std::vector<char>& downloaded,
+                                  std::vector<unsigned char>& encoded) {
+    const cv::Mat image = cv::imdecode(downloaded, cv::IMREAD_COLOR);
+    if (image.empty()) return false;
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(1080, 1080), 0, 0, cv::INTER_AREA);
+    return cv::imencode(".jpg", resized, encoded, {cv::IMWRITE_JPEG_QUALITY, 90});
+}
 
 static SatelliteConfig pickRandom(const std::vector<SatelliteConfig>& list) {
     static std::mt19937 rng(std::random_device{}());
@@ -76,57 +88,6 @@ static std::string imageUrl(const SatelliteConfig& config) {
     }
 
     return {};
-}
-
-// Scans data/{satellite}/{interval}/{combo}/{period}/ and returns the SATELLITE_LIST
-// index of the combo whose most recent period folder has the latest timestamp name.
-// Returns -1 if the data directory is absent or no combo matches the list.
-static int detectLastSatIndex(const std::filesystem::path& dataDir,
-                               const std::vector<SatelliteConfig>& list) {
-    if (!std::filesystem::exists(dataDir)) return -1;
-
-    std::string bestPeriodKey;
-    std::string bestCombo;
-
-    try {
-        for (const auto& satEntry : std::filesystem::directory_iterator(dataDir)) {
-            if (!satEntry.is_directory()) continue;
-            for (const auto& ivEntry : std::filesystem::directory_iterator(satEntry)) {
-                if (!ivEntry.is_directory()) continue;
-                for (const auto& comboEntry : std::filesystem::directory_iterator(ivEntry)) {
-                    if (!comboEntry.is_directory()) continue;
-                    for (const auto& periodEntry : std::filesystem::directory_iterator(comboEntry)) {
-                        if (!periodEntry.is_directory()) continue;
-                        std::string key = periodEntry.path().filename().string();
-                        if (key > bestPeriodKey) {
-                            bestPeriodKey = key;
-                            bestCombo     = comboEntry.path().filename().string();
-                        }
-                    }
-                }
-            }
-        }
-    } catch (...) { return -1; }
-
-    if (bestCombo.empty()) return -1;
-
-    // Parse "SATELLITE-SECTOR-PRODUCT" (e.g. "GOES18-FD-GEOCOLOR")
-    auto first = bestCombo.find('-');
-    if (first == std::string::npos) return -1;
-    auto second = bestCombo.find('-', first + 1);
-    if (second == std::string::npos) return -1;
-
-    std::string satellite = bestCombo.substr(0, first);
-    std::string sector    = bestCombo.substr(first + 1, second - first - 1);
-    std::string product   = bestCombo.substr(second + 1);
-
-    for (int i = 0; i < static_cast<int>(list.size()); ++i) {
-        if (list[i].satellite == satellite &&
-            list[i].sector    == sector    &&
-            list[i].product   == product)
-            return i;
-    }
-    return -1;
 }
 
 size_t write_to_buffer(void* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -307,14 +268,16 @@ int main() {
         if (interval == "weekly") return 7 * 86400;
         return 30 * 86400;
     };
-    auto periodKey = [](std::time_t value) {
+    auto periodKey = [](std::time_t value, const char* format = "%Y-%m-%d_%H-%M-%S") {
         std::tm tm = *std::localtime(&value);
         char buffer[24];
-        strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
+        strftime(buffer, sizeof(buffer), format, &tm);
         return std::string(buffer);
     };
 
-    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath) / "data";
+    std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath).lexically_normal();
+    if (dataDir.filename().empty()) dataDir = dataDir.parent_path();
+    if (dataDir.filename() != "data") dataDir /= "data";
     std::filesystem::create_directories(dataDir);
 
     const auto cycle = std::chrono::seconds(cfg.pullIntervalMinutes * 60);
@@ -344,14 +307,13 @@ int main() {
     for (auto& source : sources) {
         const std::string name = comboName(source.config);
         for (const auto& interval : activeIntervals) {
-            std::filesystem::path comboDir = dataDir / source.config.satellite / interval / name;
-            if (!pathExists(comboDir)) continue;
-
             std::vector<std::string> incomplete;
-            for (const auto& entry : std::filesystem::directory_iterator(comboDir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(dataDir)) {
                 if (!entry.is_directory()) continue;
-                const auto imageryDir = entry.path() / "imagery";
-                const auto outputDir = entry.path() / "output";
+                const auto sourceDir = runDirectory(dataDir, source.config.satellite, interval,
+                                                    name, entry.path().filename().string());
+                const auto imageryDir = sourceDir / "imagery";
+                const auto outputDir = sourceDir / "output";
                 bool hasVideo = false;
                 if (pathExists(outputDir)) {
                     for (const auto& file : std::filesystem::directory_iterator(outputDir)) {
@@ -367,7 +329,7 @@ int main() {
             if (cfg.useOldImages) {
                 const std::string& latest = incomplete.back();
                 std::tm tm{};
-                if (std::sscanf(latest.c_str(), "%4d%2d%2d_%2d%2d%2d",
+                if (std::sscanf(latest.c_str(), "%4d-%2d-%2d_%2d-%2d-%2d",
                                 &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
                                 &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
                     tm.tm_year -= 1900;
@@ -377,10 +339,12 @@ int main() {
                     logInfo("Resuming " + name + " [" + interval + "] " + latest);
                 }
                 for (size_t i = 0; i + 1 < incomplete.size(); ++i)
-                    std::filesystem::remove_all(comboDir / incomplete[i]);
+                    std::filesystem::remove_all(runDirectory(dataDir, source.config.satellite,
+                                                             interval, name, incomplete[i]));
             } else {
                 for (const auto& key : incomplete)
-                    std::filesystem::remove_all(comboDir / key);
+                    std::filesystem::remove_all(runDirectory(dataDir, source.config.satellite,
+                                                             interval, name, key));
             }
         }
     }
@@ -398,7 +362,7 @@ int main() {
                 while (now - source.periodStart[interval] >= length) {
                     const std::time_t endedPeriod = source.periodStart[interval];
                     const std::string key = periodKey(endedPeriod);
-                    const auto periodDir = dataDir / source.config.satellite / interval / name / key;
+                    const auto periodDir = runDirectory(dataDir, source.config.satellite, interval, name, key);
                     const auto imageryDir = periodDir / "imagery";
                     const auto outputDir = periodDir / "output";
 
@@ -475,15 +439,29 @@ int main() {
                 logWarn("Non-JPEG response for " + name + " ("
                         + std::to_string(imageBuffer.size()) + " bytes)");
             } else {
-                const std::time_t capturedAt = std::time(nullptr);
-                const std::string filename = periodKey(capturedAt) + ".jpg";
-                for (const auto& interval : activeIntervals) {
-                    const auto imagePath = dataDir / source.config.satellite / interval / name
-                        / periodKey(source.periodStart[interval]) / "imagery" / filename;
-                    std::ofstream file(imagePath, std::ios::binary);
-                    file.write(imageBuffer.data(), static_cast<std::streamsize>(imageBuffer.size()));
+                try {
+                    std::vector<unsigned char> resizedJpeg;
+                    if (!resizeDownloadedImage(imageBuffer, resizedJpeg)) {
+                        logWarn("Could not decode or resize JPEG for " + name);
+                    } else {
+                        const std::time_t capturedAt = std::time(nullptr);
+                        const std::string filename = periodKey(capturedAt, "%Y%m%d_%H%M%S") + ".jpg";
+                        for (const auto& interval : activeIntervals) {
+                            const auto imagePath = runDirectory(dataDir, source.config.satellite, interval, name,
+                                                                periodKey(source.periodStart[interval])) / "imagery" / filename;
+                            std::ofstream file(imagePath, std::ios::binary);
+                            file.write(reinterpret_cast<const char*>(resizedJpeg.data()),
+                                       static_cast<std::streamsize>(resizedJpeg.size()));
+                            file.close();
+                            if (!file)
+                                logError("Failed to save imagery: " + imagePath.string());
+                            else
+                                logInfo("Saved " + name + " " + filename + " [" + interval + "] at 1080x1080");
+                        }
+                    }
+                } catch (const cv::Exception& error) {
+                    logWarn("Image processing failed for " + name + ": " + error.what());
                 }
-                logInfo("Saved " + name + " " + filename);
             }
 
             // Keep this source on its original cadence instead of drifting after slow downloads.
