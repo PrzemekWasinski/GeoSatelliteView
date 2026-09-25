@@ -3,7 +3,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PID_FILE="$PROJECT_ROOT/geosat.pid"
-LOG_FILE="$PROJECT_ROOT/geosat.log"
+LOG_FILE="$PROJECT_ROOT/geosatelliteview.log"
 BINARY="$PROJECT_ROOT/build/main"
 
 if [ ! -f "$BINARY" ]; then
@@ -17,6 +17,6 @@ if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
 fi
 
 cd "$PROJECT_ROOT" || exit 1
-nohup "$BINARY" > "$LOG_FILE" 2>&1 &
+nohup "$BINARY" >> "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 echo "Started (PID $!). Logs: $LOG_FILE"

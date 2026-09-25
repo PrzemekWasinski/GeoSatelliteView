@@ -2,7 +2,9 @@
 
 Geostationary Satellite View automatically collects imagery from the configured GOES, Himawari and EUMETSAT sources. It compiles a separate hourly, daily, weekly or monthly timelapse for every configured source.
 
-Different satellites, sectors, products and spectral bands are selected in `config/satellites.h`. Every source is downloaded once per configured interval, with requests evenly staggered across that interval. The config file also controls the download interval, timelapse periods and number of concurrent video encoders.
+Different satellites, sectors, products and spectral bands are selected in `config/satellites.h`. A download is attempted for every source once per configured interval, with requests evenly staggered across that interval. The config file also controls the download interval, timelapse periods and number of concurrent video encoders.
+
+Failed downloads or invalid images get up to three retries after 30, 60 and 120 seconds, provided there is time before the next regular attempt. Retries are scheduled without sleeping in the download loop and preserve the original cadence. Persistent provider errors can still leave gaps; check `geosatelliteview.log` for HTTP status, request duration and retry messages. Downloads are serial, so slow requests can also delay other sources.
 
 ## Output Example: 
 
@@ -38,3 +40,5 @@ This program is made to be ran and left, to automatically gather and compile sat
     Build system:       CMake
     Scripting:          Python,  Bash
     Image compilation:  OpenCV
+
+All application output, including OpenCV and codec diagnostics, is appended to `geosatelliteview.log`. This also applies when launching `./build/main` directly from the project directory.

@@ -25,6 +25,7 @@
 #include "../include/fileFunctions.h"
 #include "../include/configReader.h"
 #include "../include/logger.h"
+#include "../include/fetchSchedule.h"
 #include "../config/satellites.h"
 
 // Resize and encode once so every enabled interval saves identical JPEG bytes.
@@ -218,7 +219,7 @@ private:
 struct SourceState {
     SatelliteConfig config;
     std::map<std::string, std::time_t> periodStart;
-    std::chrono::steady_clock::time_point nextFetch;
+    FetchSchedule schedule;
 };
 
 static std::string comboName(const SatelliteConfig& config) {
@@ -290,7 +291,8 @@ int main() {
     for (size_t i = 0; i < SATELLITE_LIST.size(); ++i) {
         SourceState state;
         state.config = SATELLITE_LIST[i];
-        state.nextFetch = scheduleStart + spacing * static_cast<long long>(i + 1);
+        state.schedule.nextFetch = scheduleStart + spacing * static_cast<long long>(i + 1);
+        state.schedule.slot = state.schedule.nextFetch;
         for (const auto& interval : activeIntervals) state.periodStart[interval] = startTime;
         sources.push_back(std::move(state));
         logInfo("Scheduled " + comboName(SATELLITE_LIST[i]) + " at +"
@@ -352,7 +354,6 @@ int main() {
     bool running = true;
     while (running) {
         const std::time_t now = std::time(nullptr);
-        const auto steadyNow = std::chrono::steady_clock::now();
 
         // Close every elapsed period for every source and queue one video per source.
         for (auto& source : sources) {
@@ -388,7 +389,7 @@ int main() {
 
         // Normally one source becomes due per spacing slot (one minute with 10 sources/10 minutes).
         for (auto& source : sources) {
-            if (steadyNow < source.nextFetch) continue;
+            if (std::chrono::steady_clock::now() < source.schedule.nextFetch) continue;
 
             const std::string name = comboName(source.config);
             const std::string url = imageUrl(source.config);
@@ -421,10 +422,16 @@ int main() {
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
             curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
+            const auto requestStart = std::chrono::steady_clock::now();
             const CURLcode result = curl_easy_perform(curl);
             long httpCode = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
             curl_easy_cleanup(curl);
+            logInfo("Fetch " + name + " HTTP " + std::to_string(httpCode)
+                    + " in " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - requestStart).count())
+                    + " ms, " + std::to_string(imageBuffer.size()) + " bytes");
+            bool saved = false;
 
             const bool validJpeg = imageBuffer.size() > 3
                 && static_cast<unsigned char>(imageBuffer[0]) == 0xFF
@@ -446,6 +453,7 @@ int main() {
                     } else {
                         const std::time_t capturedAt = std::time(nullptr);
                         const std::string filename = periodKey(capturedAt, "%Y%m%d_%H%M%S") + ".jpg";
+                        saved = true;
                         for (const auto& interval : activeIntervals) {
                             const auto imagePath = runDirectory(dataDir, source.config.satellite, interval, name,
                                                                 periodKey(source.periodStart[interval])) / "imagery" / filename;
@@ -453,9 +461,10 @@ int main() {
                             file.write(reinterpret_cast<const char*>(resizedJpeg.data()),
                                        static_cast<std::streamsize>(resizedJpeg.size()));
                             file.close();
-                            if (!file)
+                            if (!file) {
+                                saved = false;
                                 logError("Failed to save imagery: " + imagePath.string());
-                            else
+                            } else
                                 logInfo("Saved " + name + " " + filename + " [" + interval + "] at 1080x1080");
                         }
                     }
@@ -464,9 +473,14 @@ int main() {
                 }
             }
 
-            // Keep this source on its original cadence instead of drifting after slow downloads.
-            do { source.nextFetch += cycle; }
-            while (source.nextFetch <= std::chrono::steady_clock::now());
+            const auto finishedAt = std::chrono::steady_clock::now();
+            source.schedule.finish(saved, finishedAt, cycle);
+            if (!saved) {
+                logWarn("No image saved for " + name + "; "
+                        + (source.schedule.retries ? "retry" : "next scheduled attempt")
+                        + " in " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                            source.schedule.nextFetch - finishedAt).count()) + " seconds");
+            }
         }
 
         std::this_thread::sleep_for(std::chrono::seconds(5));

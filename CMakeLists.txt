@@ -29,3 +29,9 @@ target_include_directories(main PRIVATE ${OPENCV_INCLUDE_DIRS})
 
 #link libraries
 target_link_libraries(main PRIVATE ${OPENCV_LIBRARIES} curl)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(fetch_schedule_test tests/fetchSchedule.cpp)
+    add_test(NAME fetch_schedule COMMAND fetch_schedule_test)
+endif()
