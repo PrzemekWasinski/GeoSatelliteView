@@ -39,6 +39,7 @@ Config readConfig(const std::string& path) {
 
         if      (key == "Hourly")   cfg.hourly   = parseBool(val);
         else if (key == "Daily")    cfg.daily    = parseBool(val);
+        else if (key == "ThreeDaily") cfg.threeDaily = parseBool(val);
         else if (key == "Weekly")   cfg.weekly   = parseBool(val);
         else if (key == "Monthly")  cfg.monthly  = parseBool(val);
         else if (key == "Interval") cfg.pullIntervalMinutes = std::stoi(val);

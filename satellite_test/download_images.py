@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Download sample imagery from GOES, EUMETView, Himawari, GIBS and Copernicus."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
@@ -14,7 +13,9 @@ import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlsplit
+from html.parser import HTMLParser
+from itertools import product as combinations
 import xml.etree.ElementTree as ET
 
 from PIL import Image
@@ -27,11 +28,10 @@ GIBS = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
 COPERNICUS = "https://sh.dataspace.copernicus.eu/process/v1"
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 PROVIDERS = ("goes", "eumetsat", "himawari", "nasa_gibs", "copernicus")
-# A small, editable selection for new sources; GOES still uses every C++ entry.
+# EUMETSAT is restricted to these three selected layers.
 WMS_SOURCES = {
     "eumetsat": (EUMETVIEW, (-65, -65, 65, 65), [
-        "mtg_fd:rgb_geocolour", "mtg_fd:rgb_truecolour", "mtg_fd:ir105_hrfi",
-        "mtg_fd:rgb_cloudphase", "mtg_fd:rgb_dust", "msg_fes:rgb_airmass",
+        "mtg_fd:rgb_dust", "msg_fes:rgb_airmass", "mtg_fd:rgb_truecolour",
     ]),
     "himawari": (GIBS, (80, -60, 180, 60), [
         "Himawari_AHI_Band13_Clean_Infrared", "Himawari_AHI_Air_Mass",
@@ -62,6 +62,14 @@ GOES_SECTORS = {
 GOES_CONUS_PRODUCTS = ("GEOCOLOR", "AirMass", "Dust", "DayNightCloudMicroCombo",
                        "FireTemperature", "Sandwich", *(f"{band:02d}" for band in range(1, 17)))
 GOES_IMAGE_SIZE = (500, 500)
+GOES_EXTRA_SECTORS = ("GM", "GS", "PACUS", "US", "NUS", "CUS", "SUS", "NEX", "SAX")
+GOES_EXTRA_PRODUCTS = (
+    "DayConvection", "DayLandCloud", "DayLandCloudFire", "DaySnowFog",
+    "DayCloudPhaseDistinction", "NighttimeMicrophysics", "SimpleWaterVapor",
+    "DifferentialWaterVapor", "SO2", "Ash", "CloudTop", "CloudTopHeight",
+    "CloudTopTemperature", "RainRate", "Aerosol", "GLM", "Fire", "NaturalColor",
+    "TrueColor", "GeoColor", "RGB", "18", "17",
+)
 
 
 def read_config(path):
@@ -72,18 +80,53 @@ def read_config(path):
     return list(dict.fromkeys(entries))
 
 
-def goes_test_configs(path):
-    # The production configuration may also contain non-GOES providers.
-    configs = [entry for entry in read_config(path) if entry[0].startswith("GOES")]
-    for satellite, sectors in GOES_SECTORS.items():
-        # Existing regional entries supply the product set for each satellite.
-        reference_sector = "AK" if satellite == "GOES18" else "PR"
-        products = [product for sat, sector, product in configs
-                    if (sat, sector) == (satellite, reference_sector)]
-        for sector in sectors:
-            configs.extend((satellite, sector, product) for product in products)
-        configs.extend((satellite, "CONUS", product) for product in GOES_CONUS_PRODUCTS)
-    return list(dict.fromkeys(configs))
+class DirectoryLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.links.extend(value for key, value in attrs if key == "href" and value)
+
+
+@lru_cache(maxsize=512)
+def directory_names(url, timeout):
+    """Read immediate directory children only; never crawl image archives."""
+    # NOAA does not expose a root index; do not issue this known-invalid request.
+    if url.rstrip("/") == BASE_URL.rstrip("/"):
+        return ()
+    try:
+        parser = DirectoryLinks()
+        parser.feed(fetch_bytes(url, timeout).decode("utf-8", errors="replace"))
+        names = []
+        for href in parser.links:
+            target = urljoin(url, href)
+            if urlsplit(target).netloc != urlsplit(url).netloc or not target.startswith(url):
+                continue
+            relative = target[len(url):].rstrip("/")
+            if href.endswith("/") and re.fullmatch(r"[A-Za-z0-9_-]+", relative):
+                names.append(relative)
+        return tuple(dict.fromkeys(names))
+    except (OSError, URLError, ValueError) as error:
+        print(f"Discovery unavailable for {url}: {error}; using probe candidates", file=sys.stderr)
+        return ()
+
+
+def goes_test_configs(path, discover=False, timeout=5, discovery_budget=20,
+                      extra_products=()):
+    """Probe all product candidates for GOES19 full disk, independently of keep.csv."""
+    products = set(GOES_CONUS_PRODUCTS) | set(GOES_EXTRA_PRODUCTS) | set(extra_products)
+    products.update(("Airmass", "DMW", "DerivedMotionWinds", "DayCloudPhase",
+                     "DayCloudType", "NightMicrophysics", "SnowIce", "RocketPlume",
+                     "Vegetation", "LST", "SST", "TPW"))
+    if path.exists():
+        products.update(product for satellite, _, product in read_config(path)
+                        if satellite.startswith("GOES"))
+    if discover:
+        products.update(directory_names(f"{BASE_URL}/GOES19/ABI/FD/",
+                                        min(timeout, discovery_budget)))
+    return [("GOES19", "FD", product) for product in sorted(products)]
 
 
 def image_url(satellite, sector, product):
@@ -92,6 +135,24 @@ def image_url(satellite, sector, product):
     if sector == "CONUS":
         return f"{BASE_URL}/{satellite}/ABI/CONUS/{product}/1250x750.jpg"
     return f"{BASE_URL}/{satellite}/ABI/SECTOR/{sector.lower()}/{product}/latest.jpg"
+
+
+def goes_urls(satellite, sector, product):
+    """Try direct, regional and mesoscale layouts, including static-size aliases."""
+    base = f"{BASE_URL}/{satellite}/ABI"
+    prefixes = [image_url(satellite, sector, product).rsplit("/", 1)[0]]
+    if sector not in ("FD", "CONUS"):
+        prefixes.append(f"{base}/{sector}/{product}")
+    if sector in ("M1", "M2", "MESO1", "MESO2"):
+        number = sector[-1]
+        prefixes.extend(f"{base}/{view}/{product}" for view in
+                        (f"MESO/M{number}", f"MESO{number}", f"M{number}"))
+    sizes = (("1808x1808", "5424x5424", "10848x10848", "678x678") if sector == "FD"
+             else ("1250x750", "2500x1500", "5000x3000") if sector in ("CONUS", "PACUS")
+             else ("600x600", "1200x1200", "2400x2400", "300x300", "1000x1000"))
+    return list(dict.fromkeys([image_url(satellite, sector, product),
+                              *(f"{prefix}/{filename}.jpg" for prefix in prefixes
+                                for filename in ("latest", *sizes))]))
 
 
 def job(provider, satellite, sector, product, url, requested_time="", **extra):
@@ -116,42 +177,68 @@ def resize_goes_image(path):
 
 
 @lru_cache(maxsize=4)
-def wms_times(endpoint, timeout):
+def wms_catalog(endpoint, timeout):
     url = endpoint + "?" + urlencode(dict(service="WMS", version="1.3.0", request="GetCapabilities"))
     root = ET.fromstring(fetch_bytes(url, timeout))
-    layers = {}
-    for layer in root.findall(".//{*}Layer"):
+    catalog = {}
+
+    def visit(layer, inherited_time="", inherited_styles=()):
+        when = inherited_time
+        styles = list(inherited_styles)
+        for dimension in list(layer.findall("{*}Dimension")) + list(layer.findall("{*}Extent")):
+            if dimension.get("name", "").lower() == "time":
+                when = dimension.get("default", "") or when
+        styles.extend(style.findtext("{*}Name") for style in layer.findall("{*}Style"))
+        styles = tuple(dict.fromkeys(style for style in styles if style))
         name = layer.findtext("{*}Name")
         if name:
-            for dimension in layer.findall("{*}Dimension"):
-                if dimension.get("name") == "time":
-                    layers[name] = dimension.get("default", "")
-    return layers
+            catalog[name] = (when, styles)
+        for child in layer.findall("{*}Layer"):
+            visit(child, when, styles)
+
+    for layer in root.findall("./{*}Capability/{*}Layer"):
+        visit(layer)
+    return catalog
+
+
+def wms_times(endpoint, timeout):
+    return {name: when for name, (when, _) in wms_catalog(endpoint, timeout).items()}
 
 
 def wms_jobs(provider, args):
-    endpoint, bbox, layers = WMS_SOURCES[provider]
-    # Dry runs stay entirely offline. Actual requests pin the advertised latest time.
-    times = {} if args.dry_run else wms_times(endpoint, args.timeout)
-    if args.limit:
-        layers = layers[:args.limit]
+    endpoint, bbox, seeds = WMS_SOURCES[provider]
+    catalog = {}
+    if not args.dry_run and not args.no_discovery:
+        try:
+            catalog = wms_catalog(endpoint, args.discovery_timeout)
+        except (OSError, URLError, ValueError, ET.ParseError) as error:
+            if provider != "eumetsat":
+                raise
+            print(f"EUMETSAT discovery unavailable: {error}; using probe candidates", file=sys.stderr)
+    layers = list(seeds)
     jobs = []
-    for layer in layers:
-        if not args.dry_run and layer not in times:
-            raise ValueError(f"Layer missing from API capabilities: {layer}")
-        when = times.get(layer, "")
+    for layer in dict.fromkeys(layers):
+        when, styles = catalog.get(layer, ("", ()))
         if args.date and provider == "nasa_gibs":
             when = args.date.isoformat()
         width = args.size
         height = max(1, round(width * (bbox[3] - bbox[1]) / (bbox[2] - bbox[0])))
-        params = dict(service="WMS", version="1.3.0", request="GetMap", layers=layer,
-                      styles="", crs="CRS:84", bbox=",".join(map(str, bbox)),
-                      width=width, height=height, format="image/jpeg")
-        if when:
-            params["time"] = when
-        jobs.append(job(provider, layer.split(":")[0] if provider == "eumetsat" else provider,
+        for style in (("",) if provider == "eumetsat" else dict.fromkeys(("", *styles))):
+            params = dict(service="WMS", version="1.3.0", request="GetMap", layers=layer,
+                          styles=style, crs="CRS:84", bbox=",".join(map(str, bbox)),
+                          width=width, height=height, format="image/jpeg")
+            if when:
+                params["time"] = when
+            entry = job(provider, layer.split(":")[0] if provider == "eumetsat" else provider,
                         "region" if provider == "himawari" else "overview", layer,
-                        endpoint + "?" + urlencode(params), when or "server default"))
+                        endpoint + "?" + urlencode(params), when or "server default")
+            if style:
+                # Styles are independent configurations and need distinct files.
+                suffix = style.encode("utf-8").hex()
+                entry["filename"] = entry["filename"][:-4] + "_style_" + suffix + ".jpg"
+            jobs.append(entry)
+            if args.limit and len(jobs) >= args.limit:
+                return jobs
     return jobs
 
 
@@ -186,6 +273,18 @@ def copernicus_jobs(args):
 
 
 def download(entry, output, timeout):
+    # Missing aliases are normal during exhaustive probing. Network failures are
+    # retried by download_one, but do not multiply them by every URL variant.
+    for url in entry.get("candidate_urls", (entry["url"],)):
+        row = download_one({**entry, "url": url}, output, timeout)
+        if row["status"] != "failed":
+            return row
+        if not row.pop("missing_alias", False):
+            return row
+    return row
+
+
+def download_one(entry, output, timeout):
     url, filename = entry["url"], entry["filename"]
     destination = output / filename
     temporary = destination.with_suffix(".jpg.part")
@@ -219,6 +318,7 @@ def download(entry, output, timeout):
             temporary.unlink(missing_ok=True)
             row["error"] = str(error)
             if isinstance(error, HTTPError) and error.code not in (429, 500, 502, 503, 504):
+                row["missing_alias"] = error.code in (404, 410)
                 break
             if isinstance(error, ValueError) or attempt == 2:
                 break
@@ -239,7 +339,16 @@ def main():
     parser.add_argument("--output", type=Path, default=HERE / "images")
     parser.add_argument("--workers", type=positive_int, default=4)
     parser.add_argument("--timeout", type=positive_int, default=60, help="socket timeout in seconds")
-    parser.add_argument("--providers", nargs="+", choices=PROVIDERS, default=list(PROVIDERS))
+    parser.add_argument("--discovery-timeout", type=positive_int, default=5,
+                        help="short timeout for directory/WMS discovery")
+    parser.add_argument("--discovery-budget", type=positive_int, default=20,
+                        help="total GOES discovery time budget in seconds")
+    parser.add_argument("--no-discovery", action="store_true", help="immediately probe candidates without fetching catalogs")
+    parser.add_argument("--goes-products", nargs="+", default=[], help="additional case-sensitive product names to cross-probe")
+    parser.add_argument("--eumetsat-namespaces", nargs="+", default=[])
+    parser.add_argument("--eumetsat-products", nargs="+", default=[])
+    parser.add_argument("--eumetsat-layers", nargs="+", default=[], help="additional exact namespace:layer names")
+    parser.add_argument("--providers", nargs="+", choices=PROVIDERS, default=["goes"])
     parser.add_argument("--limit", type=positive_int, help="first N images PER provider")
     parser.add_argument("--size", type=positive_int, default=1024,
                         help="new API image width (max 2500); GOES is always saved at 500x500")
@@ -259,10 +368,12 @@ def main():
         print(f"Preparing {provider}: {output.resolve()}", flush=True)
         try:
             if provider == "goes":
-                configs = goes_test_configs(args.config)
+                configs = goes_test_configs(args.config, discover=not args.dry_run and not args.no_discovery,
+                                            timeout=args.discovery_timeout, discovery_budget=args.discovery_budget,
+                                            extra_products=args.goes_products)
                 if args.limit:
                     configs = configs[:args.limit]
-                entries = [job(provider, *entry, image_url(*entry)) for entry in configs]
+                entries = [job(provider, *entry, image_url(*entry), candidate_urls=goes_urls(*entry)) for entry in configs]
             elif provider == "copernicus":
                 entries = copernicus_jobs(args)
             else:
@@ -274,10 +385,13 @@ def main():
         if args.dry_run:
             for entry in entries:
                 print(f"{provider}/{entry['filename']}: {entry['url']} {entry.get('skip', '')}")
+                for alternate in entry.get("candidate_urls", [])[1:]:
+                    print(f"  fallback: {alternate}")
                 if entry.get("setup_failed"):
                     totals["failed"] += 1
             continue
         output.mkdir(parents=True, exist_ok=True)
+        print(f"Probing {len(entries)} {provider} configurations", flush=True)
         with (output / "report.csv").open("w", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=FIELDS)
             writer.writeheader()
@@ -291,6 +405,8 @@ def main():
                     writer.writerow(row)
                     handle.flush()
                     print(f"[{provider} {index}/{len(entries)}] {row['status'].upper()} {row['filename']} {row['error']}", flush=True)
+                    if row["status"] == "saved":
+                        print(f"  Saved to: {(output / row['filename']).resolve()}", flush=True)
     print(f"Done: {totals['saved']} saved, {totals['failed']} failed, {totals['skipped']} skipped.")
     # Missing credentials are visible and yield a distinct incomplete-run status.
     return 1 if totals["failed"] else (2 if totals["skipped"] else 0)

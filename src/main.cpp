@@ -16,6 +16,7 @@
 #include <set>
 #include <cstdio>
 #include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -44,6 +45,14 @@ static SatelliteConfig pickRandom(const std::vector<SatelliteConfig>& list) {
     return list[dist(rng)];
 }
 
+static std::time_t utcTime(std::tm* value) {
+#ifdef _WIN32
+    return _mkgmtime(value);
+#else
+    return timegm(value);
+#endif
+}
+
 static std::time_t parseImageTime(const std::string& filename) {
     std::tm tm{};
     if (std::sscanf(filename.c_str(), "%4d%2d%2d_%2d%2d%2d",
@@ -53,7 +62,7 @@ static std::time_t parseImageTime(const std::string& filename) {
     tm.tm_year -= 1900;
     tm.tm_mon  -= 1;
     tm.tm_isdst = -1;
-    return std::mktime(&tm);
+    return utcTime(&tm);
 }
 
 static std::string longestEnabled(const Config& cfg) {
@@ -69,8 +78,15 @@ static std::string imageUrl(const SatelliteConfig& config) {
         if (config.sector == "FD")
             return "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/FD/"
                  + config.product + "/1808x1808.jpg";
+        if (config.sector == "M1" || config.sector == "M2" ||
+            config.sector == "MESO1" || config.sector == "MESO2")
+            return "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/MESO/M"
+                 + config.sector.back() + "/" + config.product + "/latest.jpg";
+        std::string sector = config.sector;
+        std::transform(sector.begin(), sector.end(), sector.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return "https://cdn.star.nesdis.noaa.gov/GOES" + satNum + "/ABI/SECTOR/"
-             + config.sector + "/" + config.product + "/latest.jpg";
+             + sector + "/" + config.product + "/latest.jpg";
     }
 
     if (config.satellite == "Himawari") {
@@ -244,7 +260,7 @@ int main() {
     logInfo("----- GeoSatelliteView Started at: " + std::string(startBuf) + " -----");
 
     Config cfg = readConfig("./config/config.yml");
-    if (!cfg.hourly && !cfg.daily && !cfg.weekly && !cfg.monthly) {
+    if (!cfg.hourly && !cfg.daily && !cfg.threeDaily && !cfg.weekly && !cfg.monthly) {
         logError("No timelapse interval enabled in config.yml - exiting");
         return 1;
     }
@@ -260,17 +276,18 @@ int main() {
     std::vector<std::string> activeIntervals;
     if (cfg.hourly)  activeIntervals.push_back("hourly");
     if (cfg.daily)   activeIntervals.push_back("daily");
+    if (cfg.threeDaily) activeIntervals.push_back("3daily");
     if (cfg.weekly)  activeIntervals.push_back("weekly");
     if (cfg.monthly) activeIntervals.push_back("monthly");
-
     auto intervalLength = [](const std::string& interval) -> std::time_t {
         if (interval == "hourly") return 3600;
-        if (interval == "daily")  return 86400;
+        if (interval == "daily") return 86400;
+        if (interval == "3daily") return 3 * 86400;
         if (interval == "weekly") return 7 * 86400;
         return 30 * 86400;
     };
     auto periodKey = [](std::time_t value, const char* format = "%Y-%m-%d_%H-%M-%S") {
-        std::tm tm = *std::localtime(&value);
+        std::tm tm = *std::gmtime(&value);
         char buffer[24];
         strftime(buffer, sizeof(buffer), format, &tm);
         return std::string(buffer);
@@ -293,7 +310,8 @@ int main() {
         state.config = SATELLITE_LIST[i];
         state.schedule.nextFetch = scheduleStart + spacing * static_cast<long long>(i + 1);
         state.schedule.slot = state.schedule.nextFetch;
-        for (const auto& interval : activeIntervals) state.periodStart[interval] = startTime;
+        for (const auto& interval : activeIntervals)
+            state.periodStart[interval] = startTime - startTime % intervalLength(interval);
         sources.push_back(std::move(state));
         logInfo("Scheduled " + comboName(SATELLITE_LIST[i]) + " at +"
                 + std::to_string(spacing.count() * static_cast<long long>(i + 1))
@@ -310,12 +328,15 @@ int main() {
         const std::string name = comboName(source.config);
         for (const auto& interval : activeIntervals) {
             std::vector<std::string> incomplete;
-            for (const auto& entry : std::filesystem::directory_iterator(dataDir)) {
+            const auto intervalDir = dataDir / "imagery" / interval;
+            std::filesystem::create_directories(intervalDir);
+            for (const auto& entry : std::filesystem::directory_iterator(intervalDir)) {
                 if (!entry.is_directory()) continue;
                 const auto sourceDir = runDirectory(dataDir, source.config.satellite, interval,
                                                     name, entry.path().filename().string());
-                const auto imageryDir = sourceDir / "imagery";
-                const auto outputDir = sourceDir / "output";
+                const auto imageryDir = sourceDir;
+                const auto outputDir = runDirectory(dataDir, source.config.satellite, interval,
+                                                    name, entry.path().filename().string(), "output");
                 bool hasVideo = false;
                 if (pathExists(outputDir)) {
                     for (const auto& file : std::filesystem::directory_iterator(outputDir)) {
@@ -337,7 +358,7 @@ int main() {
                     tm.tm_year -= 1900;
                     tm.tm_mon -= 1;
                     tm.tm_isdst = -1;
-                    source.periodStart[interval] = std::mktime(&tm);
+                    source.periodStart[interval] = utcTime(&tm);
                     logInfo("Resuming " + name + " [" + interval + "] " + latest);
                 }
                 for (size_t i = 0; i + 1 < incomplete.size(); ++i)
@@ -351,11 +372,7 @@ int main() {
         }
     }
 
-    bool running = true;
-    while (running) {
-        const std::time_t now = std::time(nullptr);
-
-        // Close every elapsed period for every source and queue one video per source.
+    auto closePeriods = [&](std::time_t now) {
         for (auto& source : sources) {
             const std::string name = comboName(source.config);
             for (const auto& interval : activeIntervals) {
@@ -364,8 +381,8 @@ int main() {
                     const std::time_t endedPeriod = source.periodStart[interval];
                     const std::string key = periodKey(endedPeriod);
                     const auto periodDir = runDirectory(dataDir, source.config.satellite, interval, name, key);
-                    const auto imageryDir = periodDir / "imagery";
-                    const auto outputDir = periodDir / "output";
+                    const auto imageryDir = periodDir;
+                    const auto outputDir = runDirectory(dataDir, source.config.satellite, interval, name, key, "output");
 
                     if (directoryHasImages(imageryDir)) {
                         logInfo("Queueing " + interval + " timelapse for " + name + " (" + key + ")");
@@ -386,6 +403,12 @@ int main() {
                                      periodKey(source.periodStart[interval]));
             }
         }
+
+    };
+
+    bool running = true;
+    while (running) {
+        closePeriods(std::time(nullptr));
 
         // Normally one source becomes due per spacing slot (one minute with 10 sources/10 minutes).
         for (auto& source : sources) {
@@ -452,11 +475,13 @@ int main() {
                         logWarn("Could not decode or resize JPEG for " + name);
                     } else {
                         const std::time_t capturedAt = std::time(nullptr);
+                        // A request can finish after an hour/day boundary.
+                        closePeriods(capturedAt);
                         const std::string filename = periodKey(capturedAt, "%Y%m%d_%H%M%S") + ".jpg";
                         saved = true;
                         for (const auto& interval : activeIntervals) {
                             const auto imagePath = runDirectory(dataDir, source.config.satellite, interval, name,
-                                                                periodKey(source.periodStart[interval])) / "imagery" / filename;
+                                                                periodKey(source.periodStart[interval])) / filename;
                             std::ofstream file(imagePath, std::ios::binary);
                             file.write(reinterpret_cast<const char*>(resizedJpeg.data()),
                                        static_cast<std::streamsize>(resizedJpeg.size()));

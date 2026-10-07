@@ -9,9 +9,10 @@ std::filesystem::path runDirectory(
     const std::string& satName,
     const std::string& interval,
     const std::string& comboName,
-    const std::string& dateStr
+    const std::string& dateStr,
+    const std::string& kind
 ) {
-    return dataDir / dateStr / interval / satName / comboName;
+    return dataDir / kind / interval / dateStr / satName / comboName;
 }
 
 void createRunDirectories(
@@ -21,8 +22,8 @@ void createRunDirectories(
     const std::string& comboName,
     const std::string& dateStr
 ) {
-    std::filesystem::path imageryDir = runDirectory(dataDir, satName, interval, comboName, dateStr) / "imagery";
-    std::filesystem::path outputDir  = runDirectory(dataDir, satName, interval, comboName, dateStr) / "output";
+    std::filesystem::path imageryDir = runDirectory(dataDir, satName, interval, comboName, dateStr);
+    std::filesystem::path outputDir  = runDirectory(dataDir, satName, interval, comboName, dateStr, "output");
     std::filesystem::create_directories(imageryDir);
     std::filesystem::create_directories(outputDir);
 }

@@ -2,8 +2,9 @@
 #Every configured satellite source gets its own timelapse for every enabled period.
 #For example, with 10 sources and Hourly plus Daily enabled, each hour produces
 #10 hourly videos and each day produces another 10 daily videos.
-Hourly: True
+Hourly: False
 Daily: True
+ThreeDaily: True
 Weekly: False
 Monthly: False
 
@@ -33,7 +34,7 @@ UseIncompleteImages: False
 #Path to the directory where the data folder will be created,
 #e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
 #Use `.` to store images in the project dir. A path ending in `data` is used directly.
-DataPath: /home/przemek/Programming/GeoSatelliteView/data
+DataPath: /mnt/ssd/GeoSatelliteView/data/
 
 #Output format for timelapse videos:
 #AVI   - Motion JPEG (.avi)  - universally compatible, large files
@@ -44,3 +45,7 @@ DataPath: /home/przemek/Programming/GeoSatelliteView/data
 Format: MP4
 
 #You will have to re-run the program after modifying this config file!
+
+#Storage: data/{imagery,output}/<duration>/<UTC period start>/<satellite>/<source>/
+#ThreeDaily creates consecutive 72-hour periods anchored to 1970-01-01 UTC.
+#Weekly and Monthly use fixed 7-day and 30-day periods using the same anchor.

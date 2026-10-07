@@ -14,6 +14,7 @@ enum class SatelliteMode { FIXED, RANDOM, SEQUENTIAL };
 struct Config {
     bool hourly  = false;
     bool daily   = false;
+    bool threeDaily = false;
     bool weekly  = false;
     bool monthly = false;
     int  pullIntervalMinutes = 10;

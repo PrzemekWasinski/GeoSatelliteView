@@ -1,6 +1,6 @@
 # Geostationary Satellite View
 
-Geostationary Satellite View automatically collects imagery from the configured GOES, Himawari and EUMETSAT sources. It compiles a separate hourly, daily, weekly or monthly timelapse for every configured source.
+Geostationary Satellite View automatically collects imagery from the configured GOES, Himawari and EUMETSAT sources. It compiles separate hourly, daily, three-day, weekly and monthly timelapses for every configured source.
 
 Different satellites, sectors, products and spectral bands are selected in `config/satellites.h`. A download is attempted for every source once per configured interval, with requests evenly staggered across that interval. The config file also controls the download interval, timelapse periods and number of concurrent video encoders.
 
@@ -14,18 +14,23 @@ All imagery and videos are stored in `data/`, organized as:
 
 ```text
 data/
-  2026-09-24_10-15-44/       # period start: YYYY-MM-DD_HH-MM-SS
-    hourly/                  # daily/, weekly/, monthly/ when enabled
-      GOES19/
-        GOES19-FD-GEOCOLOR/   # satellite-sector-product configuration
-          imagery/
-          output/
+  imagery/
+    daily/                         # hourly/, 3daily/, weekly/ when enabled
+      2026-10-07_00-00-00/          # UTC period start
+        GOES19/GOES19-FD-GEOCOLOR/
+          20261007_120000.jpg
+  output/
+    daily/
+      2026-10-07_00-00-00/
+        GOES19/GOES19-FD-GEOCOLOR/output.mp4
+    monthly/                       # enabled periods use the same layout
+      2026-10-01_00-00-00/
+        GOES19/GOES19-FD-GEOCOLOR/output.mp4
 ```
 
-Downloaded images are resized to 1080 × 1080 and saved as JPEGs at quality 90 before being stored for each enabled interval.
+Downloaded images are resized to 1080 ? 1080 and saved as JPEGs at quality 90 for each enabled period. `DataPath` can point to the `data` folder itself or its parent directory.
 
-Each period date contains the enabled interval folders for that period.
-`DataPath` can point to the `data` folder itself or its parent directory.
+Each enabled period builds its timelapse from the JPEGs in its own imagery folder. Hourly and daily align to UTC hours and days; three-day, weekly and monthly periods use fixed 72-hour, 7-day and 30-day blocks anchored to 1970-01-01 UTC. Existing folders from the older storage layout are not automatically migrated.
 
 The program will delete all images after compiling them to save disk space, this can be turned off by setting `Delete` to `False` in `config/config.yml`.
 

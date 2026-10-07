@@ -11,7 +11,8 @@ std::filesystem::path runDirectory(
     const std::string& satName,
     const std::string& interval,
     const std::string& comboName,
-    const std::string& dateStr
+    const std::string& dateStr,
+    const std::string& kind = "imagery"
 );
 
 void createRunDirectories(
