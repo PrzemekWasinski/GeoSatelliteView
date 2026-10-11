@@ -6,44 +6,33 @@ Different satellites, sectors, products and spectral bands are selected in `conf
 
 Failed downloads or invalid images get up to three retries after 30, 60 and 120 seconds, provided there is time before the next regular attempt. Retries are scheduled without sleeping in the download loop and preserve the original cadence. Persistent provider errors can still leave gaps; check `geosatelliteview.log` for HTTP status, request duration and retry messages. Downloads are serial, so slow requests can also delay other sources.
 
-## Output Example: 
+## Output Examples: 
 
-https://github.com/user-attachments/assets/24c6d048-e6a6-46e5-83bf-a6f6c49b1c12
+### GOES 19 Full Disc Geocolour
+Shows The full view of North and South America in natural colours.
 
-All imagery and videos are stored in `data/`, organized as:
+https://github.com/user-attachments/assets/6729f303-59af-45fa-90f1-fd093c0b4d5c
 
-```text
-data/
-  imagery/
-    daily/                         # hourly/, 3daily/, weekly/ when enabled
-      2026-10-07_00-00-00/          # UTC period start
-        GOES19/GOES19-FD-GEOCOLOR/
-          20261007_120000.jpg
-  output/
-    daily/
-      2026-10-07_00-00-00/
-        GOES19/GOES19-FD-GEOCOLOR/output.mp4
-    monthly/                       # enabled periods use the same layout
-      2026-10-01_00-00-00/
-        GOES19/GOES19-FD-GEOCOLOR/output.mp4
-```
+### GOES 18 Moving Object 1
+The GOES satellites are also able to track moving objects such as hurricanes or typhoons, below is a 2 day timelapse of a typhoon in the Pacific Ocean.
 
-Downloaded images are resized to 1080 ? 1080 and saved as JPEGs at quality 90 for each enabled period. `DataPath` can point to the `data` folder itself or its parent directory.
+https://github.com/user-attachments/assets/1a6cc701-310f-4dec-97b1-5f62fdf55cc7
 
-Each enabled period builds its timelapse from the JPEGs in its own imagery folder. Hourly and daily align to UTC hours and days; three-day, weekly and monthly periods use fixed 72-hour, 7-day and 30-day blocks anchored to 1970-01-01 UTC. Existing folders from the older storage layout are not automatically migrated.
+### GOES 19 PNW Channel 10
+Shows north-west America's temperature and humidity levels using different colours:
+- Red to Yellow: Represents dry regions in the lower atmosphere.
+- White, and Blue: Represents relatively moist regions.
+- Green and darker colours: Represents cold, high-altitude cloud tops.
 
-The program will delete all images after compiling them to save disk space, this can be turned off by setting `Delete` to `False` in `config/config.yml`.
+https://github.com/user-attachments/assets/f8ca8a2d-dbc9-49a8-a105-09081ad862fd
 
-This program is made to be ran and left, to automatically gather and compile satellite imagery. To start the program follow these steps:
+### Eumetsat Meteosat 12 Geocolour
+Shows Europe and Africa in natural colours. The white 'blanket' that appears during nighttime as the satellite's camera is shut off during the night.
 
-1) Run the compile script: `compile.sh`
-2) Start the program by running: `./build/main`
-3) I recommend creating a Systemd process to automatically start this program on boot.
+https://github.com/user-attachments/assets/899e9d45-49b5-4fd6-9a5c-f0824ee04410
 
 ## Tech Stack
     Main language:      C++ (C++17)
     Build system:       CMake
-    Scripting:          Python,  Bash
+    Scripting:          Python,Bash
     Image compilation:  OpenCV
-
-All application output, including OpenCV and codec diagnostics, is appended to `geosatelliteview.log`. This also applies when launching `./build/main` directly from the project directory.
