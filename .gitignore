@@ -1,5 +1,6 @@
-data/*
-build/*
+temp
+Data
+build
 satellite_test/images
 __pycache__
 
@@ -16,3 +17,4 @@ temp/
 .vscode/
 
 *.log
+*.pid

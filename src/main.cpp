@@ -45,14 +45,6 @@ static SatelliteConfig pickRandom(const std::vector<SatelliteConfig>& list) {
     return list[dist(rng)];
 }
 
-static std::time_t utcTime(std::tm* value) {
-#ifdef _WIN32
-    return _mkgmtime(value);
-#else
-    return timegm(value);
-#endif
-}
-
 static std::time_t parseImageTime(const std::string& filename) {
     std::tm tm{};
     if (std::sscanf(filename.c_str(), "%4d%2d%2d_%2d%2d%2d",
@@ -62,7 +54,8 @@ static std::time_t parseImageTime(const std::string& filename) {
     tm.tm_year -= 1900;
     tm.tm_mon  -= 1;
     tm.tm_isdst = -1;
-    return utcTime(&tm);
+    tm.tm_isdst = -1;
+    return std::mktime(&tm);
 }
 
 static std::string longestEnabled(const Config& cfg) {
@@ -125,64 +118,94 @@ bool checkDiskSpace(const char* path = ".", int minimumGB = 10) {
     return availableGB >= static_cast<unsigned long long>(minimumGB);
 }
 
-bool compilePeriod(
-    const std::filesystem::path& imageryDir,
-    const std::filesystem::path& outputDir,
-    bool deleteImages,
-    const std::string& format,
-    double keepIntervalHours,
-    std::time_t periodStart
-) {
-    std::string outputFile = std::string(outputDir) + "/output" + formatExtension(format);
-    logInfo("Compiling timelapse: " + std::string(imageryDir));
-    std::filesystem::create_directories(outputDir);
-    bool ok = makeTimelapse(std::string(imageryDir), outputFile, 24, format);
-    if (!ok) {
-        logError("Timelapse failed - keeping imagery: " + std::string(imageryDir));
-        return false;
-    }
-    logInfo("Timelapse done: " + outputFile);
-    if (deleteImages) {
-        if (keepIntervalHours <= 0.0) {
-            std::filesystem::remove_all(imageryDir);
-            logInfo("Deleted imagery: " + std::string(imageryDir));
-        } else {
-            long keepSecs = static_cast<long>(keepIntervalHours * 3600.0 + 0.5);
+static std::string periodKey(std::time_t value, const char* format = "%Y-%m-%d_%H-%M-%S") {
+    std::tm tm = *std::localtime(&value);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), format, &tm);
+    return buffer;
+}
 
-            std::vector<std::filesystem::path> imageFiles;
-            for (const auto& entry : std::filesystem::directory_iterator(imageryDir)) {
-                if (!entry.is_regular_file()) continue;
-                std::string ext = entry.path().extension().string();
-                if (ext == ".jpg" || ext == ".jpeg" || ext == ".png")
-                    imageFiles.push_back(entry.path());
-            }
-            std::sort(imageFiles.begin(), imageFiles.end());
-
-            // For each N-hour slot keep the last (most recent) image in that slot.
-            std::map<long, std::filesystem::path> slotKeep;
-            for (const auto& p : imageFiles) {
-                std::time_t t = parseImageTime(p.filename().string());
-                if (t == -1) continue;
-                long offset = static_cast<long>(t - periodStart);
-                if (offset < 0) offset = 0;
-                slotKeep[offset / keepSecs] = p; // later images overwrite earlier ones in the same slot
-            }
-
-            std::set<std::filesystem::path> toKeep;
-            for (auto& [slot, p] : slotKeep) toKeep.insert(p);
-
-            int deleted = 0;
-            for (const auto& p : imageFiles) {
-                if (toKeep.find(p) == toKeep.end()) {
-                    std::filesystem::remove(p);
-                    ++deleted;
-                }
-            }
-            logInfo("Selective delete: kept " + std::to_string(toKeep.size())
-                    + ", deleted " + std::to_string(deleted) + " from " + std::string(imageryDir));
+// Called only after a download has been saved successfully. The first capture,
+// not a rounded clock boundary, starts each interval's full-duration collection.
+static void storeTemporaryCapture(const std::filesystem::path& tempDir,
+    const std::string& satellite, const std::string& name,
+    std::map<std::string, std::time_t>& starts, std::time_t captured,
+    const std::filesystem::path& downloaded) {
+    for (auto& [interval, start] : starts) {
+        const auto actualStart = start == 0 ? captured : start;
+        const auto directory = temporaryImageDirectory(tempDir, satellite, interval, name, periodKey(actualStart));
+        std::filesystem::create_directories(directory);
+        const auto destination = directory / downloaded.filename();
+        std::error_code error;
+        std::filesystem::create_hard_link(downloaded, destination, error);
+        if (error) std::filesystem::copy_file(downloaded, destination, std::filesystem::copy_options::skip_existing);
+        if (start == 0) {
+            start = captured;
+            logInfo("Collection started: " + name + " [" + interval + "] " + periodKey(start));
         }
     }
-    return true;
+}
+
+// Encode on the project disk, then copy the finished video to permanent storage.
+// No cleanup operation in this function targets the permanent output directory.
+bool compilePeriod(const std::vector<std::string>& frames,
+                   const std::filesystem::path& temporary,
+                   const std::filesystem::path& outputPath, const std::string& format) {
+    try {
+        std::filesystem::create_directories(temporary.parent_path());
+        if (!makeTimelapse(frames, temporary.string(), 24, format)) {
+            logError("Timelapse failed; keeping temporary imagery: " + temporary.string());
+            return false;
+        }
+        std::filesystem::create_directories(outputPath.parent_path());
+        // Existing permanent files are preserved. A collision keeps the temporary job for review.
+        if (!std::filesystem::copy_file(temporary, outputPath, std::filesystem::copy_options::skip_existing)) {
+            logWarn("Output already exists; keeping temporary job: " + outputPath.string());
+            return false;
+        }
+        logInfo("Timelapse done: " + outputPath.string());
+        std::filesystem::remove(temporary);
+        std::set<std::filesystem::path> completedFolders;
+        for (const auto& frame : frames) completedFolders.insert(std::filesystem::path(frame).parent_path());
+        for (const auto& folder : completedFolders) std::filesystem::remove_all(folder);
+        // Encoding jobs also have their own period folder.
+        std::error_code ignored;
+        std::filesystem::remove(temporary.parent_path(), ignored);
+        return true;
+    } catch (const std::exception& error) {
+        logError("Timelapse failed; keeping temporary job: " + std::string(error.what()));
+        return false;
+    }
+}
+
+static std::time_t temporaryImageTime(const std::string& filename) {
+    std::tm tm{};
+    if (std::sscanf(filename.c_str(), "%2d-%2d-%4d_%2d-%2d-%2d",
+                    &tm.tm_mday, &tm.tm_mon, &tm.tm_year,
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) return -1;
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    tm.tm_isdst = -1;
+    return std::mktime(&tm);
+}
+
+static std::vector<std::pair<std::time_t, std::string>> sourceFrames(
+    const std::filesystem::path& tempDir, const std::string& satellite,
+    const std::string& interval, const std::string& name) {
+    std::vector<std::pair<std::time_t, std::string>> frames;
+    const auto root = tempDir / satellite / interval;
+    if (!pathExists(root)) return frames;
+    for (const auto& date : std::filesystem::directory_iterator(root)) {
+        const auto configDir = date.path() / name;
+        if (!date.is_directory() || !pathExists(configDir)) continue;
+        for (const auto& file : std::filesystem::directory_iterator(configDir)) {
+            if (!file.is_regular_file() || file.path().extension() != ".jpg") continue;
+            const auto captured = temporaryImageTime(file.path().filename().string());
+            if (captured != -1) frames.emplace_back(captured, file.path().string());
+        }
+    }
+    std::sort(frames.begin(), frames.end());
+    return frames;
 }
 
 class EncodingQueue {
@@ -286,17 +309,28 @@ int main() {
         if (interval == "weekly") return 7 * 86400;
         return 30 * 86400;
     };
-    auto periodKey = [](std::time_t value, const char* format = "%Y-%m-%d_%H-%M-%S") {
-        std::tm tm = *std::gmtime(&value);
-        char buffer[24];
-        strftime(buffer, sizeof(buffer), format, &tm);
-        return std::string(buffer);
-    };
+
 
     std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath).lexically_normal();
     if (dataDir.filename().empty()) dataDir = dataDir.parent_path();
-    if (dataDir.filename() != "data") dataDir /= "data";
-    std::filesystem::create_directories(dataDir);
+    if (dataDir.filename() != "data" && dataDir.filename() != "Data") dataDir /= "Data";
+    std::filesystem::create_directories(dataDir / "imagery");
+    std::filesystem::create_directories(dataDir / "outputs");
+    const auto tempDir = std::filesystem::current_path() / "temp";
+    if (std::filesystem::is_symlink(tempDir)) {
+        logError("Project temp/ must be a real directory, not a symbolic link");
+        return 1;
+    }
+    const auto permanentRelative = std::filesystem::weakly_canonical(dataDir).lexically_relative(
+        std::filesystem::weakly_canonical(tempDir));
+    if (permanentRelative.empty() || *permanentRelative.begin() != "..") {
+        logError("DataPath must be outside the project's temporary directory");
+        return 1;
+    }
+    std::filesystem::remove_all(tempDir);
+    std::filesystem::create_directories(tempDir);
+    logInfo("Cleared project temp/; starting a fresh collection");
+
 
     const auto cycle = std::chrono::seconds(cfg.pullIntervalMinutes * 60);
     const auto spacing = std::chrono::seconds(
@@ -308,99 +342,84 @@ int main() {
     for (size_t i = 0; i < SATELLITE_LIST.size(); ++i) {
         SourceState state;
         state.config = SATELLITE_LIST[i];
-        state.schedule.nextFetch = scheduleStart + spacing * static_cast<long long>(i + 1);
+        state.schedule.nextFetch = scheduleStart + spacing * static_cast<long long>(i);
         state.schedule.slot = state.schedule.nextFetch;
-        for (const auto& interval : activeIntervals)
-            state.periodStart[interval] = startTime - startTime % intervalLength(interval);
+        for (const auto& interval : activeIntervals) state.periodStart[interval] = 0;
         sources.push_back(std::move(state));
         logInfo("Scheduled " + comboName(SATELLITE_LIST[i]) + " at +"
-                + std::to_string(spacing.count() * static_cast<long long>(i + 1))
+                + std::to_string(spacing.count() * static_cast<long long>(i))
                 + " seconds, then every " + std::to_string(cfg.pullIntervalMinutes) + " minutes");
     }
 
     logInfo("Active sources: " + std::to_string(sources.size()));
     logInfo("Encoder workers: " + std::to_string(cfg.encoderWorkers));
-    logInfo("Delete after timelapse: " + std::string(cfg.deleteAfterTimelapse ? "yes" : "no"));
     EncodingQueue encoders(static_cast<size_t>(cfg.encoderWorkers));
 
-    // Resume or clear unfinished periods independently for every source.
-    for (auto& source : sources) {
-        const std::string name = comboName(source.config);
-        for (const auto& interval : activeIntervals) {
-            std::vector<std::string> incomplete;
-            const auto intervalDir = dataDir / "imagery" / interval;
-            std::filesystem::create_directories(intervalDir);
-            for (const auto& entry : std::filesystem::directory_iterator(intervalDir)) {
-                if (!entry.is_directory()) continue;
-                const auto sourceDir = runDirectory(dataDir, source.config.satellite, interval,
-                                                    name, entry.path().filename().string());
-                const auto imageryDir = sourceDir;
-                const auto outputDir = runDirectory(dataDir, source.config.satellite, interval,
-                                                    name, entry.path().filename().string(), "output");
-                bool hasVideo = false;
-                if (pathExists(outputDir)) {
-                    for (const auto& file : std::filesystem::directory_iterator(outputDir)) {
-                        if (file.is_regular_file()) { hasVideo = true; break; }
-                    }
-                }
-                if (directoryHasImages(imageryDir) && !hasVideo)
-                    incomplete.push_back(entry.path().filename().string());
-            }
-            std::sort(incomplete.begin(), incomplete.end());
-            if (incomplete.empty()) continue;
-
-            if (cfg.useOldImages) {
-                const std::string& latest = incomplete.back();
-                std::tm tm{};
-                if (std::sscanf(latest.c_str(), "%4d-%2d-%2d_%2d-%2d-%2d",
-                                &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-                                &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
-                    tm.tm_year -= 1900;
-                    tm.tm_mon -= 1;
-                    tm.tm_isdst = -1;
-                    source.periodStart[interval] = utcTime(&tm);
-                    logInfo("Resuming " + name + " [" + interval + "] " + latest);
-                }
-                for (size_t i = 0; i + 1 < incomplete.size(); ++i)
-                    std::filesystem::remove_all(runDirectory(dataDir, source.config.satellite,
-                                                             interval, name, incomplete[i]));
-            } else {
-                for (const auto& key : incomplete)
-                    std::filesystem::remove_all(runDirectory(dataDir, source.config.satellite,
-                                                             interval, name, key));
+    // Restore periodic-image slots from permanent files without modifying them.
+    std::map<std::string, std::set<std::time_t>> archivedSlots;
+    const auto keepSeconds = static_cast<std::time_t>(cfg.keepInterval * 3600);
+    if (keepSeconds > 0) {
+        for (const auto& source : sources) {
+            const auto name = comboName(source.config);
+            const auto root = dataDir / "imagery" / source.config.satellite;
+            if (!pathExists(root)) continue;
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+                const auto filename = entry.path().filename().string();
+                if (!entry.is_regular_file() || entry.path().extension() != ".jpg" ||
+                    filename.compare(0, name.size() + 1, name + "_") != 0) continue;
+                const auto captured = parseImageTime(filename.substr(name.size() + 1));
+                if (captured != -1) archivedSlots[name].insert(captured / keepSeconds);
             }
         }
     }
+    auto archiveImage = [&](const SourceState& source, std::time_t captured,
+                            const std::filesystem::path& temporary) {
+        if (keepSeconds <= 0) return true;
+        const auto name = comboName(source.config);
+        const auto slot = captured / keepSeconds;
+        if (archivedSlots[name].count(slot)) return true;
+        try {
+            const auto directory = runDirectory(dataDir, source.config.satellite, "", name, periodKey(captured));
+            std::filesystem::create_directories(directory);
+            const auto destination = directory / (name + "_" + periodKey(captured, "%Y%m%d_%H%M%S") + ".jpg");
+            std::filesystem::copy_file(temporary, destination, std::filesystem::copy_options::skip_existing);
+            archivedSlots[name].insert(slot);
+            return true;
+        } catch (const std::exception& error) {
+            logError("Periodic image copy failed; keeping temporary frames: " + std::string(error.what()));
+            return false;
+        }
+    };
 
     auto closePeriods = [&](std::time_t now) {
         for (auto& source : sources) {
             const std::string name = comboName(source.config);
             for (const auto& interval : activeIntervals) {
                 const std::time_t length = intervalLength(interval);
-                while (now - source.periodStart[interval] >= length) {
+                if (source.periodStart[interval] != 0 && now - source.periodStart[interval] >= length) {
                     const std::time_t endedPeriod = source.periodStart[interval];
                     const std::string key = periodKey(endedPeriod);
-                    const auto periodDir = runDirectory(dataDir, source.config.satellite, interval, name, key);
-                    const auto imageryDir = periodDir;
-                    const auto outputDir = runDirectory(dataDir, source.config.satellite, interval, name, key, "output");
-
-                    if (directoryHasImages(imageryDir)) {
-                        logInfo("Queueing " + interval + " timelapse for " + name + " (" + key + ")");
-                        const bool removeImages = cfg.deleteAfterTimelapse;
-                        const std::string format = cfg.format;
-                        const double keepInterval = cfg.keepInterval;
-                        encoders.enqueue([imageryDir, outputDir, removeImages, format,
-                                          keepInterval, endedPeriod]() {
-                            compilePeriod(imageryDir, outputDir, removeImages, format,
-                                          keepInterval, endedPeriod);
-                        });
-                    } else {
-                        logWarn("No imagery for " + name + " [" + interval + "] " + key);
+                    const auto outputFile = videoPath(dataDir, source.config.satellite, interval, name, key,
+                                                      formatExtension(cfg.format));
+                    std::vector<std::string> frames;
+                    bool archived = true;
+                    for (const auto& [captured, path] : sourceFrames(tempDir, source.config.satellite, interval, name)) {
+                        if (captured >= endedPeriod && captured < endedPeriod + length) {
+                            frames.push_back(path);
+                            if (!archiveImage(source, captured, path)) archived = false;
+                        }
                     }
-                    source.periodStart[interval] += length;
+                    if (archived && !frames.empty() && !std::filesystem::is_regular_file(outputFile)) {
+                        const std::string format = cfg.format;
+                        const auto temporary = tempDir / ".encoding" / source.config.satellite / interval / key
+                                               / (name + formatExtension(format));
+                        encoders.enqueue([frames, temporary, outputFile, format]() {
+                            compilePeriod(frames, temporary, outputFile, format);
+                        });
+                    }
+                    source.periodStart[interval] = 0;
                 }
-                createRunDirectories(dataDir, source.config.satellite, interval, name,
-                                     periodKey(source.periodStart[interval]));
+
             }
         }
 
@@ -421,7 +440,8 @@ int main() {
                 running = false;
                 break;
             }
-            if (!checkDiskSpace(dataDir.c_str(), cfg.minimumDiskGB)) {
+            if (!checkDiskSpace(dataDir.c_str(), cfg.minimumDiskGB) ||
+                !checkDiskSpace(tempDir.c_str(), cfg.minimumDiskGB)) {
                 logError("Less than " + std::to_string(cfg.minimumDiskGB)
                          + " GB remaining on data path - stopping");
                 running = false;
@@ -475,25 +495,30 @@ int main() {
                         logWarn("Could not decode or resize JPEG for " + name);
                     } else {
                         const std::time_t capturedAt = std::time(nullptr);
-                        // A request can finish after an hour/day boundary.
+                        // Close elapsed collections before assigning this capture to its periods.
                         closePeriods(capturedAt);
-                        const std::string filename = periodKey(capturedAt, "%Y%m%d_%H%M%S") + ".jpg";
-                        saved = true;
-                        for (const auto& interval : activeIntervals) {
-                            const auto imagePath = runDirectory(dataDir, source.config.satellite, interval, name,
-                                                                periodKey(source.periodStart[interval])) / filename;
-                            std::ofstream file(imagePath, std::ios::binary);
-                            file.write(reinterpret_cast<const char*>(resizedJpeg.data()),
-                                       static_cast<std::streamsize>(resizedJpeg.size()));
-                            file.close();
-                            if (!file) {
-                                saved = false;
-                                logError("Failed to save imagery: " + imagePath.string());
-                            } else
-                                logInfo("Saved " + name + " " + filename + " [" + interval + "] at 1080x1080");
+                        const auto filename = periodKey(capturedAt, "%d-%m-%Y_%H-%M-%S") + ".jpg";
+                        const auto downloadDir = tempDir / ".downloads" / name;
+                        std::filesystem::create_directories(downloadDir);
+                        const auto firstImage = downloadDir / filename;
+                        std::ofstream file(firstImage, std::ios::binary);
+                        file.write(reinterpret_cast<const char*>(resizedJpeg.data()),
+                                   static_cast<std::streamsize>(resizedJpeg.size()));
+                        file.close();
+                        saved = static_cast<bool>(file);
+                        if (saved) {
+                            storeTemporaryCapture(tempDir, source.config.satellite, name,
+                                                  source.periodStart, capturedAt, firstImage);
+                            if (archiveImage(source, capturedAt, firstImage)) {
+                                std::filesystem::remove(firstImage);
+                                std::error_code ignored;
+                                std::filesystem::remove(downloadDir, ignored);
+                            } else saved = false;
                         }
+                        if (saved) logInfo("Saved temporary imagery: " + name + " " + filename);
                     }
-                } catch (const cv::Exception& error) {
+                } catch (const std::exception& error) {
+                    saved = false;
                     logWarn("Image processing failed for " + name + ": " + error.what());
                 }
             }

@@ -39,6 +39,11 @@ bool makeTimelapse(const std::string& folderPath, const std::string& outputFile,
     //sort images alphabetically (filenames are ISO-ordered, so this is chronological)
     std::sort(imageFiles.begin(), imageFiles.end());
 
+    return makeTimelapse(imageFiles, outputFile, fps, format);
+}
+
+bool makeTimelapse(const std::vector<std::string>& imageFiles, const std::string& outputFile,
+                   int fps, const std::string& format) {
     if (imageFiles.empty()) {
         std::cerr << "No images found" << std::endl;
         return false;
@@ -51,7 +56,7 @@ bool makeTimelapse(const std::string& folderPath, const std::string& outputFile,
         if (!firstFrame.empty()) break;
     }
     if (firstFrame.empty()) {
-        std::cerr << "No decodable images found in " << folderPath << std::endl;
+        std::cerr << "No decodable images found in " << outputFile << std::endl;
         return false;
     }
 
@@ -94,7 +99,7 @@ bool makeTimelapse(const std::string& folderPath, const std::string& outputFile,
 
     writer.release();
     if (written == 0) {
-        std::cerr << "\nNo frames written for " << folderPath << std::endl;
+        std::cerr << "\nNo frames written for " << outputFile << std::endl;
         return false;
     }
     std::cout << "\nTimelapse saved to " << outputFile << std::endl;

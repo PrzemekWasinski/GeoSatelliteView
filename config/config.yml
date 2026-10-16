@@ -1,16 +1,14 @@
 #How often do you want images compiled (you can select multiple):
 #Every configured satellite source gets its own timelapse for every enabled period.
-#For example, with 10 sources and Hourly plus Daily enabled, each hour produces
-#10 hourly videos and each day produces another 10 daily videos.
-Hourly: False
+#For example: Enabling Daily and Hourly will create timelapses every 1h and 24h.
+Hourly: True
 Daily: True
-ThreeDaily: True
+ThreeDaily: False
 Weekly: False
 Monthly: False
 
 #How often do you want images to be pulled (Minutes):
-#Every entry in config/satellites.h is pulled once per interval. Downloads are
-#evenly staggered across the interval instead of all starting at the same time.
+#Every entry in config/satellites.h is pulled once per interval.
 Interval: 10
 
 #Maximum number of timelapses encoded simultaneously. Three is recommended for
@@ -20,21 +18,15 @@ EncoderWorkers: 3
 #Stop collecting before the data disk has less than this much free space.
 MinimumDiskGB: 10
 
-#Delete ALL images after creating timelapse? (will exclude images kept by KeepInterval on line 25)
-Delete: True
-
-#How often do you want images to be kept? If the value is 6 then during a 24h timelapse 1 image will be kept every 
-#6 hours. (This will still work even if Delete: True on line 21)
+#Copy the first capture in each UTC-aligned N-hour slot from temp/ to permanent imagery.
+#Zero disables periodic copies. Temporary files are always cleared at startup
+#and completed period folders are always deleted after the video is copied.
 KeepInterval: 6
 
-#Lets say you run this program at 2am and it stops at 5am. When you re-run it at 11am
-#do you want to keep using imagery from 2am-5am (True) or do you want to discard it and start over (False).
-UseIncompleteImages: False
-
 #Path to the directory where the data folder will be created,
-#e.g. `/home/user/projects/` will create a `data` dir and store everything in `/home/user/projects/data/`.
-#Use `.` to store images in the project dir. A path ending in `data` is used directly.
-DataPath: /mnt/ssd/GeoSatelliteView/data/
+#e.g. `/home/user/projects/` will create a `Data` dir and store everything in `/home/user/projects/Data/`.
+#Use `.` to store images in the project dir. A path ending in `Data` or `data` is used directly.
+DataPath: .
 
 #Output format for timelapse videos:
 #AVI   - Motion JPEG (.avi)  - universally compatible, large files
@@ -45,7 +37,3 @@ DataPath: /mnt/ssd/GeoSatelliteView/data/
 Format: MP4
 
 #You will have to re-run the program after modifying this config file!
-
-#Storage: data/{imagery,output}/<duration>/<UTC period start>/<satellite>/<source>/
-#ThreeDaily creates consecutive 72-hour periods anchored to 1970-01-01 UTC.
-#Weekly and Monthly use fixed 7-day and 30-day periods using the same anchor.

@@ -22,8 +22,6 @@ struct Config {
     int  minimumDiskGB = 10;
     SatelliteMode satelliteMode = SatelliteMode::RANDOM;
     SatelliteConfig fixedSatellite;
-    bool deleteAfterTimelapse = false;
-    bool useOldImages = false;
     double keepInterval = 0.0;
     std::string dataPath = ".";
     std::string format = "MP4";
