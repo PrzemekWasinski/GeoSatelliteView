@@ -1,3 +1,8 @@
+#include <fstream>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <cerrno>
+extern char **environ;
 #include <opencv2/opencv.hpp>
 #include <filesystem>
 #include <vector>
@@ -113,3 +118,34 @@ bool makeTimelapse(const std::vector<std::string>& imageFiles, const std::string
 //     makeTimelapse(dataPath + "GOES16/2026-Jan-20", dataPath + "GOES16/timelapses/2026-Jan-20.avi", 30);
 //     return 0;
 // }
+
+// Invoke directly: paths are never interpreted by a shell.
+bool concatenateTimelapses(const std::vector<std::string>& videos, const std::string& outputFile) {
+    if (videos.empty()) return false;
+    const auto listPath = outputFile + ".concat";
+    std::ofstream list(listPath);
+    for (const auto& video : videos) {
+        if (!std::filesystem::is_regular_file(video)) return false;
+        const auto path = std::filesystem::absolute(video).string();
+        if (path.find_first_of("\r\n") != std::string::npos) return false;
+        list << "file '";
+        for (char c : path) {
+            if (c == '\'') list << "'\\''";
+            else list << c;
+        }
+        list << "'\n";
+    }
+    list.close();
+    if (!list) return false;
+    pid_t pid;
+    const char* args[] = {FFMPEG_EXECUTABLE, "-nostdin", "-v", "error", "-y", "-f", "concat",
+        "-safe", "0", "-i", listPath.c_str(), "-map", "0:v:0", "-c", "copy", outputFile.c_str(), nullptr};
+    if (posix_spawn(&pid, FFMPEG_EXECUTABLE, nullptr, nullptr,
+                    const_cast<char**>(args), environ) != 0) return false;
+    int status = 0;
+    pid_t result;
+    do { result = waitpid(pid, &status, 0); } while (result == -1 && errno == EINTR);
+    std::filesystem::remove(listPath);
+    return result == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0
+        && std::filesystem::is_regular_file(outputFile) && std::filesystem::file_size(outputFile) > 0;
+}

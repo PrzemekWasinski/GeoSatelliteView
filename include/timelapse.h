@@ -11,6 +11,8 @@ bool makeTimelapse(const std::string& folderPath, const std::string& outputFile,
 
 bool makeTimelapse(const std::vector<std::string>& imageFiles, const std::string& outputFile, int fps, const std::string& format);
 
+bool concatenateTimelapses(const std::vector<std::string>& videos, const std::string& outputFile);
+
 // Returns the file extension (with dot) for a given format string.
 std::string formatExtension(const std::string& format);
 

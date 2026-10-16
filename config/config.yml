@@ -1,6 +1,8 @@
 #How often do you want images compiled (you can select multiple):
 #Every configured satellite source gets its own timelapse for every enabled period.
-#For example: Enabling Daily and Hourly will create timelapses every 1h and 24h.
+#Only the shortest common period collects images; longer videos join base clips.
+#Daily + Weekly joins seven daily videos. ThreeDaily + Weekly uses daily base clips.
+#Monthly is 30 days. FFmpeg is required for joining without re-encoding.
 Hourly: True
 Daily: True
 ThreeDaily: False

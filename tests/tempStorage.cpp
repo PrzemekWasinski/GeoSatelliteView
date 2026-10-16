@@ -2,6 +2,7 @@
 #include "../src/main.cpp"
 #undef main
 #include <cassert>
+#include <opencv2/videoio.hpp>
 
 int main() {
     const auto root = std::filesystem::temp_directory_path() /
@@ -45,6 +46,26 @@ int main() {
     assert(std::filesystem::file_size(hourlyVideo) == videoSize);
     assert(!compilePeriod({}, temporary / ".encoding" / "empty.mp4", permanent / "failed.mp4", "MP4"));
     assert(!std::filesystem::exists(permanent / "failed.mp4"));
+    // Concatenation preserves frame count/order and never cleans up source videos.
+    const auto blue = root / "blue.jpg";
+    assert(cv::imwrite(blue.string(), cv::Mat(1080, 1080, CV_8UC3, cv::Scalar(230, 10, 10))));
+    const auto secondVideo = permanent / "second 'clip.mp4";
+    assert(makeTimelapse(std::vector<std::string>{blue.string()}, secondVideo.string(), 24, "MP4"));
+    const auto combined = permanent / "combined.mp4";
+    assert(compilePeriod({hourlyVideo.string(), secondVideo.string()},
+        temporary / ".encoding" / "combined.mp4", combined, "MP4", true));
+    assert(std::filesystem::exists(hourlyVideo));
+    assert(std::filesystem::exists(secondVideo));
+    cv::VideoCapture video(combined.string());
+    cv::Mat decoded;
+    assert(video.read(decoded));
+    assert(cv::mean(decoded)[2] > cv::mean(decoded)[0]);
+    assert(video.read(decoded));
+    assert(cv::mean(decoded)[0] > cv::mean(decoded)[2]);
+    assert(!video.read(decoded));
+    video.release();
+    assert(!concatenateTimelapses({}, (root / "empty.mp4").string()));
+    assert(!concatenateTimelapses({(root / "missing.mp4").string()}, (root / "missing-output.mp4").string()));
     // Regression: a first successful capture must populate temp immediately, for all
     // enabled intervals, using its exact time rather than the next clock boundary.
     std::tm firstTime{};

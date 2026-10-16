@@ -6,6 +6,12 @@ Different satellites, sectors, products and spectral bands are selected in `conf
 
 Failed downloads or invalid images get up to three retries after 30, 60 and 120 seconds, provided there is time before the next regular attempt. Retries are scheduled without sleeping in the download loop and preserve the original cadence. Persistent provider errors can still leave gaps; check `geosatelliteview.log` for HTTP status, request duration and retry messages. Downloads are serial, so slow requests can also delay other sources.
 
+Only the shortest compilation period collects images. Longer timelapses concatenate completed base videos with FFmpeg stream copy, avoiding image retention and video re-encoding. For example, daily plus three-day uses three daily videos; daily plus weekly uses seven. All enabled periods share fixed boundaries starting at the first successful capture. Monthly means 30 days.
+
+When the shortest enabled period does not divide every longer period (such as three-day plus weekly), a common base period is used instead: daily clips in that example. These base videos are also kept in permanent outputs. Longer jobs wait for every required base video to be published successfully; missing or failed base jobs prevent incomplete longer videos from being published. Source videos and periodic archived images are preserved. As before, restarting clears temporary collections and starts new periods; unfinished aggregate groups are not resumed across restarts.
+
+Install `ffmpeg` alongside the existing OpenCV and curl dependencies before building. Finished base videos release their temporary images immediately after publication. `EncoderWorkers` bounds both image encoding and video concatenation jobs.
+
 ## Output Examples: 
 
 ### GOES 19 Full Disc Geocolour

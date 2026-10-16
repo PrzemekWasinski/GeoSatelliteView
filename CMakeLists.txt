@@ -5,6 +5,12 @@ project(TimelapseApp VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+find_program(FFMPEG_EXECUTABLE ffmpeg)
+if(NOT FFMPEG_EXECUTABLE)
+    message(FATAL_ERROR "FFmpeg is required to concatenate timelapses")
+endif()
+add_definitions(-DFFMPEG_EXECUTABLE="${FFMPEG_EXECUTABLE}")
+
 #source files
 set(SOURCES
     src/main.cpp

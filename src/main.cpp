@@ -21,6 +21,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <numeric>
 
 #include "../include/timelapse.h"
 #include "../include/fileFunctions.h"
@@ -29,7 +30,7 @@
 #include "../include/fetchSchedule.h"
 #include "../config/satellites.h"
 
-// Resize and encode once so every enabled interval saves identical JPEG bytes.
+// Resize and encode each download once for the base collection.
 static bool resizeDownloadedImage(const std::vector<char>& downloaded,
                                   std::vector<unsigned char>& encoded) {
     const cv::Mat image = cv::imdecode(downloaded, cv::IMREAD_COLOR);
@@ -150,23 +151,30 @@ static void storeTemporaryCapture(const std::filesystem::path& tempDir,
 // No cleanup operation in this function targets the permanent output directory.
 bool compilePeriod(const std::vector<std::string>& frames,
                    const std::filesystem::path& temporary,
-                   const std::filesystem::path& outputPath, const std::string& format) {
+                   const std::filesystem::path& outputPath, const std::string& format,
+                   bool videos = false) {
     try {
         std::filesystem::create_directories(temporary.parent_path());
-        if (!makeTimelapse(frames, temporary.string(), 24, format)) {
+        if (!(videos ? concatenateTimelapses(frames, temporary.string())
+                     : makeTimelapse(frames, temporary.string(), 24, format))) {
             logError("Timelapse failed; keeping temporary imagery: " + temporary.string());
             return false;
         }
         std::filesystem::create_directories(outputPath.parent_path());
         // Existing permanent files are preserved. A collision keeps the temporary job for review.
-        if (!std::filesystem::copy_file(temporary, outputPath, std::filesystem::copy_options::skip_existing)) {
+        if (std::filesystem::exists(outputPath)) {
             logWarn("Output already exists; keeping temporary job: " + outputPath.string());
             return false;
         }
+        const auto staging = std::filesystem::path(outputPath.string() + ".partial");
+        std::filesystem::copy_file(temporary, staging, std::filesystem::copy_options::overwrite_existing);
+        // Hard-link publication is atomic and refuses to replace existing outputs.
+        std::filesystem::create_hard_link(staging, outputPath);
+        std::filesystem::remove(staging);
         logInfo("Timelapse done: " + outputPath.string());
         std::filesystem::remove(temporary);
         std::set<std::filesystem::path> completedFolders;
-        for (const auto& frame : frames) completedFolders.insert(std::filesystem::path(frame).parent_path());
+        if (!videos) for (const auto& frame : frames) completedFolders.insert(std::filesystem::path(frame).parent_path());
         for (const auto& folder : completedFolders) std::filesystem::remove_all(folder);
         // Encoding jobs also have their own period folder.
         std::error_code ignored;
@@ -191,11 +199,13 @@ static std::time_t temporaryImageTime(const std::string& filename) {
 
 static std::vector<std::pair<std::time_t, std::string>> sourceFrames(
     const std::filesystem::path& tempDir, const std::string& satellite,
-    const std::string& interval, const std::string& name) {
+    const std::string& interval, const std::string& name,
+    const std::string& key = "") {
     std::vector<std::pair<std::time_t, std::string>> frames;
     const auto root = tempDir / satellite / interval;
     if (!pathExists(root)) return frames;
     for (const auto& date : std::filesystem::directory_iterator(root)) {
+        if (!key.empty() && date.path() != temporaryImageDirectory(tempDir, satellite, interval, name, key).parent_path()) continue;
         const auto configDir = date.path() / name;
         if (!date.is_directory() || !pathExists(configDir)) continue;
         for (const auto& file : std::filesystem::directory_iterator(configDir)) {
@@ -255,7 +265,18 @@ private:
     bool stopping = false;
 };
 
+struct VideoGroup {
+    std::time_t start = 0;
+    std::vector<std::string> clips;
+};
+
+struct PendingCompilation {
+    std::vector<std::string> clips;
+    std::filesystem::path temporary, output;
+};
+
 struct SourceState {
+    std::map<std::string, VideoGroup> groups;
     SatelliteConfig config;
     std::map<std::string, std::time_t> periodStart;
     FetchSchedule schedule;
@@ -310,6 +331,14 @@ int main() {
         return 30 * 86400;
     };
 
+    // A common base also handles periods such as three days and seven days.
+    std::time_t baseLength = intervalLength(activeIntervals.front());
+    for (const auto& interval : activeIntervals)
+        baseLength = std::gcd(baseLength, intervalLength(interval));
+    std::string baseInterval = baseLength == 3600 ? "hourly" :
+        baseLength == 86400 ? "daily" : activeIntervals.front();
+    std::vector<PendingCompilation> pendingCompilations;
+
 
     std::filesystem::path dataDir = std::filesystem::path(cfg.dataPath).lexically_normal();
     if (dataDir.filename().empty()) dataDir = dataDir.parent_path();
@@ -344,7 +373,7 @@ int main() {
         state.config = SATELLITE_LIST[i];
         state.schedule.nextFetch = scheduleStart + spacing * static_cast<long long>(i);
         state.schedule.slot = state.schedule.nextFetch;
-        for (const auto& interval : activeIntervals) state.periodStart[interval] = 0;
+        state.periodStart[baseInterval] = 0;
         sources.push_back(std::move(state));
         logInfo("Scheduled " + comboName(SATELLITE_LIST[i]) + " at +"
                 + std::to_string(spacing.count() * static_cast<long long>(i))
@@ -394,16 +423,16 @@ int main() {
     auto closePeriods = [&](std::time_t now) {
         for (auto& source : sources) {
             const std::string name = comboName(source.config);
-            for (const auto& interval : activeIntervals) {
-                const std::time_t length = intervalLength(interval);
-                if (source.periodStart[interval] != 0 && now - source.periodStart[interval] >= length) {
+            for (const auto& [interval, unused] : source.periodStart) {
+                const std::time_t length = baseLength;
+                while (source.periodStart[interval] != 0 && now - source.periodStart[interval] >= length) {
                     const std::time_t endedPeriod = source.periodStart[interval];
                     const std::string key = periodKey(endedPeriod);
                     const auto outputFile = videoPath(dataDir, source.config.satellite, interval, name, key,
                                                       formatExtension(cfg.format));
                     std::vector<std::string> frames;
                     bool archived = true;
-                    for (const auto& [captured, path] : sourceFrames(tempDir, source.config.satellite, interval, name)) {
+                    for (const auto& [captured, path] : sourceFrames(tempDir, source.config.satellite, interval, name, key)) {
                         if (captured >= endedPeriod && captured < endedPeriod + length) {
                             frames.push_back(path);
                             if (!archiveImage(source, captured, path)) archived = false;
@@ -417,7 +446,23 @@ int main() {
                             compilePeriod(frames, temporary, outputFile, format);
                         });
                     }
-                    source.periodStart[interval] = 0;
+                    // Longer periods reference base outputs, including jobs still encoding.
+                    for (const auto& longer : activeIntervals) {
+                        if (intervalLength(longer) == baseLength) continue;
+                        auto& group = source.groups[longer];
+                        if (group.clips.empty()) group.start = endedPeriod;
+                        group.clips.push_back(outputFile.string());
+                        if (group.clips.size() == static_cast<size_t>(intervalLength(longer) / baseLength)) {
+                            const auto groupKey = periodKey(group.start);
+                            const auto output = videoPath(dataDir, source.config.satellite, longer, name,
+                                                          groupKey, formatExtension(cfg.format));
+                            const auto temporary = tempDir / ".encoding" / source.config.satellite / longer
+                                / groupKey / (name + formatExtension(cfg.format));
+                            pendingCompilations.push_back({std::move(group.clips), temporary, output});
+                            group = {};
+                        }
+                    }
+                    source.periodStart[interval] = endedPeriod + length;
                 }
 
             }
@@ -428,6 +473,17 @@ int main() {
     bool running = true;
     while (running) {
         closePeriods(std::time(nullptr));
+        for (auto job = pendingCompilations.begin(); job != pendingCompilations.end();) {
+            if (!std::all_of(job->clips.begin(), job->clips.end(), [](const auto& clip) {
+                    return std::filesystem::is_regular_file(clip);
+                })) { ++job; continue; }
+            const auto ready = *job;
+            const auto format = cfg.format;
+            encoders.enqueue([ready, format]() {
+                compilePeriod(ready.clips, ready.temporary, ready.output, format, true);
+            });
+            job = pendingCompilations.erase(job);
+        }
 
         // Normally one source becomes due per spacing slot (one minute with 10 sources/10 minutes).
         for (auto& source : sources) {
